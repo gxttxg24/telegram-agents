@@ -14,14 +14,10 @@ class Settings:
     telegram_username: str
     bot_peers: dict[str, str]
     telegram_persistence_file: Path
-    llm_provider: str
-    ollama_base_url: str
-    ollama_model: str
-    ollama_extract_model: str
-    openai_base_url: str
-    openai_api_key: str
-    openai_model: str
-    openai_extract_model: str
+    codex_base_url: str
+    codex_api_key: str
+    codex_model: str
+    codex_extract_model: str
     history_turns: int
     memory_db: Path
     schedule_db: Path
@@ -63,9 +59,8 @@ def load_settings(profile: str | None = None) -> Settings:
         _profile_env(bot_profile, "SCHEDULE_DB")
         or os.getenv("BOT_SCHEDULE_DB", f"data/bot_schedule{profile_suffix}.sqlite3")
     )
-    openai_model = (
+    codex_model = (
         os.getenv("CODEX_MODEL", "").strip()
-        or os.getenv("OPENAI_MODEL", "").strip()
         or "gpt-5.2"
     )
 
@@ -75,27 +70,12 @@ def load_settings(profile: str | None = None) -> Settings:
         telegram_username=_profile_env(bot_profile, "USERNAME"),
         bot_peers=_discover_bot_usernames(),
         telegram_persistence_file=telegram_persistence_file,
-        llm_provider=os.getenv("LLM_PROVIDER", "ollama").strip().lower(),
-        ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/"),
-        ollama_model=os.getenv("OLLAMA_MODEL", "qwen2.5:0.5b"),
-        ollama_extract_model=(
-            os.getenv("OLLAMA_EXTRACT_MODEL", "").strip()
-            or "qwen2.5:0.5b"
-        ),
-        openai_base_url=(
-            os.getenv("CODEX_BASE_URL", "").strip()
-            or os.getenv("OPENAI_BASE_URL", "").strip()
-            or "https://api.openai.com/v1"
-        ).rstrip("/"),
-        openai_api_key=(
-            os.getenv("CODEX_API_KEY", "").strip()
-            or os.getenv("OPENAI_API_KEY", "").strip()
-        ),
-        openai_model=openai_model,
-        openai_extract_model=(
+        codex_base_url=os.getenv("CODEX_BASE_URL", "").strip().rstrip("/"),
+        codex_api_key=os.getenv("CODEX_API_KEY", "").strip(),
+        codex_model=codex_model,
+        codex_extract_model=(
             os.getenv("CODEX_EXTRACT_MODEL", "").strip()
-            or os.getenv("OPENAI_EXTRACT_MODEL", "").strip()
-            or openai_model
+            or codex_model
         ),
         history_turns=max(1, history_turns),
         memory_db=memory_db,

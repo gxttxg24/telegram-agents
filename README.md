@@ -33,7 +33,6 @@ CALENDAR_BOT_PROFILE=A
 WEATHER_BOT_PROFILE=B
 SLOT_MATCHER_BOT_PROFILE=D
 
-LLM_PROVIDER=openai
 CODEX_BASE_URL=https://ai-internal.orionarm.ai
 CODEX_API_KEY=...
 CODEX_MODEL=gpt-5.5
@@ -60,17 +59,14 @@ tg_agent_bot/
   bot.py                         Telegram handler、profile 启动、总控状态机
   b2b.py                         bot-to-bot JSON envelope、去重、防循环
   config.py                      .env 配置、A/B/C/D profile 发现
-  llm.py                         Ollama 和 OpenAI-compatible gateway client
+  llm.py                         Codex API client
   schedule.py                    SQLite 日程表、空闲时间、冲突检测
-  schedule_llm.py                单 bot 旧命令的自然语言日程抽取
 
   bots/calendar/service.py       Bot A: CalendarBot 后端
   bots/weather/service.py        Bot B: WeatherBot 后端
   bots/orchestrator/planner.py   Bot C: 总控 LLM 规划和结果摘要
   bots/slot_matcher/service.py   Bot D: SlotMatcherBot 后端
 ```
-
-顶层的 `calendar_service.py`、`weather_service.py`、`orchestrator.py`、`slot_matcher_service.py` 是兼容旧 import 的 re-export shim。
 
 ## 协作流程
 
@@ -557,46 +553,12 @@ debug: bot.py:b2b_debug()
 手动 WeatherBot 请求: bot.py:b2b_weather()
 ```
 
-## 旧单 bot 命令
-
-这些命令仍然保留，主要用于直接测试 CalendarBot 或单 bot 模式：
-
-```text
-/start
-/reset
-/add_event 明天下午，大概两点开始组会，三点半结束
-/schedule_event 明天找时间打球2个小时
-/schedule_event 明天约朋友吃饭
-/list_events
-/free_time 明天
-/delete_event 事件编号
-/set_preference 我一般不想上午开会
-/show_profile
-```
-
-实现：
-
-```text
-/add_event: bot.py:add_event()
-/schedule_event: bot.py:schedule_event()
-/free_time: bot.py:free_time()
-/delete_event: bot.py:delete_event()
-/set_preference: bot.py:set_preference()
-自然语言抽取: schedule_llm.py
-```
-
 ## 验证
 
 编译检查：
 
 ```powershell
 .\.venv\Scripts\python -m compileall tg_agent_bot
-```
-
-Telegram 轮询 smoke test：
-
-```powershell
-.\.venv\Scripts\python -m tg_agent_bot.polling_smoke_test
 ```
 
 # 测试

@@ -31,76 +31,7 @@ class LLMClient(Protocol):
 
 
 @dataclass(frozen=True)
-class OllamaClient:
-    base_url: str
-    model: str
-    timeout_seconds: float = 60.0
-
-    async def reply(self, history: list[ChatMessage], user_text: str) -> str:
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-        messages.extend(history)
-        messages.append({"role": "user", "content": user_text})
-
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "stream": False,
-            "options": {
-                "temperature": 0.7,
-                "num_ctx": 4096,
-            },
-        }
-
-        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-            response = await client.post(f"{self.base_url}/api/chat", json=payload)
-            response.raise_for_status()
-
-        data = response.json()
-        content = data.get("message", {}).get("content", "").strip()
-        if not content:
-            raise RuntimeError("Ollama returned an empty response.")
-
-        return content
-
-    async def json_reply(
-        self,
-        system_prompt: str,
-        user_prompt: str,
-        *,
-        timeout_seconds: float | None = None,
-    ) -> dict[str, Any]:
-        payload = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "stream": False,
-            "format": "json",
-            "options": {
-                "temperature": 0,
-                "num_ctx": 4096,
-                "num_predict": 256,
-            },
-        }
-
-        async with httpx.AsyncClient(timeout=timeout_seconds or self.timeout_seconds) as client:
-            response = await client.post(f"{self.base_url}/api/chat", json=payload)
-            response.raise_for_status()
-
-        data = response.json()
-        content = data.get("message", {}).get("content", "").strip()
-        if not content:
-            raise RuntimeError("Ollama returned an empty JSON response.")
-
-        parsed = json.loads(content)
-        if not isinstance(parsed, dict):
-            raise RuntimeError("Ollama JSON response must be an object.")
-        return parsed
-
-
-@dataclass(frozen=True)
-class OpenAIResponsesClient:
+class CodexAPIClient:
     base_url: str
     api_key: str
     model: str
@@ -117,7 +48,7 @@ class OpenAIResponsesClient:
         )
         content = _extract_response_text(data).strip()
         if not content:
-            raise RuntimeError("OpenAI/Codex returned an empty response.")
+            raise RuntimeError("Codex API returned an empty response.")
         return content
 
     async def json_reply(
@@ -143,10 +74,10 @@ class OpenAIResponsesClient:
         )
         content = _extract_response_text(data).strip()
         if not content:
-            raise RuntimeError("OpenAI/Codex returned an empty JSON response.")
+            raise RuntimeError("Codex API returned an empty JSON response.")
         parsed = json.loads(content)
         if not isinstance(parsed, dict):
-            raise RuntimeError("OpenAI/Codex JSON response must be an object.")
+            raise RuntimeError("Codex API JSON response must be an object.")
         return parsed
 
     async def _responses_request(
@@ -170,11 +101,11 @@ class OpenAIResponsesClient:
             except httpx.HTTPStatusError as exc:
                 detail = response.text[:1000]
                 raise RuntimeError(
-                    f"OpenAI/Codex request failed: {response.status_code} {detail}"
+                    f"Codex API request failed: {response.status_code} {detail}"
                 ) from exc
         data = _parse_response_payload(response)
         if not isinstance(data, dict):
-            raise RuntimeError("OpenAI/Codex response must be a JSON object.")
+            raise RuntimeError("Codex API response must be a JSON object.")
         return data
 
 
@@ -225,7 +156,7 @@ def _parse_response_payload(response: httpx.Response) -> dict[str, Any]:
         elif event_type == "response.failed":
             response_data = item.get("response")
             error = response_data.get("error") if isinstance(response_data, dict) else None
-            raise RuntimeError(f"OpenAI/Codex streaming response failed: {error}")
+            raise RuntimeError(f"Codex API streaming response failed: {error}")
 
     if completed is not None:
         if deltas and "output_text" not in completed:
@@ -233,7 +164,7 @@ def _parse_response_payload(response: httpx.Response) -> dict[str, Any]:
         return completed
     if deltas:
         return {"output_text": "".join(deltas)}
-    raise RuntimeError("OpenAI/Codex streaming response did not include output text.")
+    raise RuntimeError("Codex API streaming response did not include output text.")
 
 
 def _chat_messages(history: list[ChatMessage], user_text: str) -> list[dict[str, str]]:

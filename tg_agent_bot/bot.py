@@ -38,7 +38,7 @@ from .bots.calendar import (
     is_calendar_request,
 )
 from .config import load_settings
-from .llm import LLMClient, OllamaClient, OpenAIResponsesClient
+from .llm import CodexAPIClient, LLMClient
 from .memory import MemoryStore
 from .bots.orchestrator import (
     calendar_context_from_result,
@@ -47,21 +47,7 @@ from .bots.orchestrator import (
     summarize_calendar_result,
     summarize_weather_results,
 )
-from .schedule import (
-    ScheduleParseError,
-    ScheduleStore,
-    ParsedEvent,
-    format_datetime_range,
-    format_event,
-    format_time_range,
-    free_time_blocks,
-    pick_schedule_slot,
-)
-from .schedule_llm import (
-    parse_day_with_llm,
-    parse_event_with_llm,
-    parse_schedule_request_with_llm,
-)
+from .schedule import ScheduleStore
 from .bots.slot_matcher import (
     SlotMatcherServiceError,
     handle_slot_matcher_request,
@@ -75,7 +61,6 @@ from .bots.weather import (
 
 
 logger = logging.getLogger(__name__)
-PENDING_EVENT_KEY = "pending_event"
 TELEGRAM_TEXT_LIMIT = 4096
 
 
@@ -84,7 +69,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     await update.effective_message.reply_text(
-        "你好，我已经在线。直接发私聊消息可以测试上下文记忆，也可以用 /add_event 添加日程。"
+        "你好，我已经在线。私聊 OrchestratorBot 可以发起日程、天气和空闲时间匹配协作。"
     )
 
 
@@ -95,186 +80,6 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     memory: MemoryStore = context.application.bot_data["memory"]
     memory.clear(update.effective_chat.id)
     await update.effective_message.reply_text("已清空这段私聊的上下文记忆。")
-
-
-async def add_event(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_chat is None or update.effective_message is None:
-        return
-
-    schedule: ScheduleStore = context.application.bot_data["schedule"]
-    llm: LLMClient = context.application.bot_data["extract_llm"]
-    payload = _command_payload(update)
-    try:
-        parsed = await parse_event_with_llm(llm, payload)
-    except ScheduleParseError as exc:
-        await update.effective_message.reply_text(str(exc))
-        return
-    except Exception as exc:
-        logger.warning("LLM event extraction failed after retries: %s", exc)
-        await update.effective_message.reply_text(
-            "\u5927\u6a21\u578b\u63d0\u53d6\u65e5\u7a0b\u5931\u8d25\uff0c\u8fd9\u6b21\u6ca1\u6709\u6dfb\u52a0\u4e8b\u4ef6\u3002\u8bf7\u6362\u4e00\u79cd\u66f4\u660e\u786e\u7684\u8bf4\u6cd5\u91cd\u8bd5\u3002"
-        )
-        return
-
-    conflicts = schedule.conflicting_events(update.effective_chat.id, parsed)
-    if conflicts:
-        context.chat_data[PENDING_EVENT_KEY] = {
-            "event": parsed,
-            "conflict_ids": [event.id for event in conflicts],
-        }
-        await update.effective_message.reply_text(
-            "\u8fd9\u4e2a\u65e5\u7a0b\u548c\u5df2\u6709\u4e8b\u4ef6\u51b2\u7a81\uff0c\u6682\u65f6\u8fd8\u6ca1\u6709\u6dfb\u52a0\uff1a\n"
-            f"\u5f85\u6dfb\u52a0\uff1a{format_datetime_range(parsed.starts_at, parsed.ends_at)} {parsed.title}\n"
-            "\u51b2\u7a81\u4e8b\u4ef6\uff1a\n"
-            + "\n".join(format_event(event) for event in conflicts)
-            + "\n\n\u5982\u679c\u8981\u5220\u9664\u51b2\u7a81\u4e8b\u4ef6\u5e76\u52a0\u5165\u65b0\u4e8b\u4ef6\uff0c\u8bf7\u56de\u590d\u201c\u8986\u76d6\u201d\uff1b\u8981\u653e\u5f03\u8bf7\u56de\u590d\u201c\u53d6\u6d88\u201d\u3002"
-        )
-        return
-
-    event = schedule.add_event(update.effective_chat.id, parsed)
-    await update.effective_message.reply_text(
-        f"已添加：{event.id}. {format_datetime_range(event.starts_at, event.ends_at)} {event.title}"
-    )
-
-
-async def list_events(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_chat is None or update.effective_message is None:
-        return
-
-    schedule: ScheduleStore = context.application.bot_data["schedule"]
-    events = schedule.list_events(update.effective_chat.id)
-    if not events:
-        await update.effective_message.reply_text("还没有未来日程。")
-        return
-
-    await update.effective_message.reply_text(
-        "未来日程：\n" + "\n".join(format_event(event) for event in events)
-    )
-
-
-async def free_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_chat is None or update.effective_message is None:
-        return
-
-    schedule: ScheduleStore = context.application.bot_data["schedule"]
-    llm: LLMClient = context.application.bot_data["extract_llm"]
-    payload = _command_payload(update)
-    try:
-        target_day = await parse_day_with_llm(llm, payload)
-    except ScheduleParseError as exc:
-        await update.effective_message.reply_text(str(exc))
-        return
-    except Exception as exc:
-        logger.warning(
-            "LLM day extraction failed after retries: %s: %s",
-            type(exc).__name__,
-            exc,
-        )
-        await update.effective_message.reply_text(
-            "\u5927\u6a21\u578b\u63d0\u53d6\u65e5\u671f\u5931\u8d25\u3002\u8bf7\u6362\u4e00\u79cd\u66f4\u660e\u786e\u7684\u8bf4\u6cd5\u91cd\u8bd5\u3002"
-        )
-        return
-
-    preference = schedule.get_preference(update.effective_chat.id)
-    events = schedule.events_on_day(update.effective_chat.id, target_day)
-    blocks = free_time_blocks(events, target_day, preference)
-    if not blocks:
-        await update.effective_message.reply_text(f"{target_day:%Y-%m-%d} 没有可推荐的空闲时间。")
-        return
-
-    preference_note = "\n已考虑你的偏好。" if preference else ""
-    await update.effective_message.reply_text(
-        f"{target_day:%Y-%m-%d} 可用时间：\n"
-        + "\n".join(format_time_range(start, end) for start, end in blocks)
-        + preference_note
-    )
-
-
-async def schedule_event(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_chat is None or update.effective_message is None:
-        return
-
-    schedule: ScheduleStore = context.application.bot_data["schedule"]
-    llm: LLMClient = context.application.bot_data["extract_llm"]
-    payload = _command_payload(update)
-    try:
-        request = await parse_schedule_request_with_llm(llm, payload)
-    except ScheduleParseError as exc:
-        await update.effective_message.reply_text(str(exc))
-        return
-    except Exception as exc:
-        logger.warning(
-            "LLM schedule request extraction failed after retries: %s: %s",
-            type(exc).__name__,
-            exc,
-        )
-        await update.effective_message.reply_text(
-            "\u5927\u6a21\u578b\u63d0\u53d6\u5b89\u6392\u9700\u6c42\u5931\u8d25\u3002\u8bf7\u8bf4\u660e\u65e5\u671f\u3001\u6d3b\u52a8\u548c\u65f6\u957f\uff0c\u6bd4\u5982\uff1a/schedule_event \u660e\u5929\u627e\u65f6\u95f4\u6253\u74032\u4e2a\u5c0f\u65f6\u3002"
-        )
-        return
-
-    events = schedule.events_on_day(update.effective_chat.id, request.target_day)
-    preference = schedule.get_preference(update.effective_chat.id)
-    slot = pick_schedule_slot(events, request, preference)
-    if slot is None:
-        await update.effective_message.reply_text(
-            f"{request.target_day:%Y-%m-%d} \u6ca1\u6709\u627e\u5230\u9002\u5408\u5b89\u6392\u201c{request.title}\u201d\u7684\u7a7a\u6863\u3002"
-        )
-        return
-
-    starts_at, ends_at = slot
-    event = schedule.add_event(
-        update.effective_chat.id,
-        ParsedEvent(request.title, starts_at, ends_at),
-    )
-    await update.effective_message.reply_text(
-        f"\u5df2\u5b89\u6392\uff1a{event.id}. {format_datetime_range(event.starts_at, event.ends_at)} {event.title}"
-    )
-
-
-async def delete_event(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_chat is None or update.effective_message is None:
-        return
-
-    match = re.search(r"\d+", _command_payload(update))
-    if match is None:
-        await update.effective_message.reply_text("请提供事件编号，比如：/delete_event 3")
-        return
-
-    schedule: ScheduleStore = context.application.bot_data["schedule"]
-    event_id = int(match.group())
-    if schedule.delete_event(update.effective_chat.id, event_id):
-        await update.effective_message.reply_text(f"已删除事件 {event_id}。")
-    else:
-        await update.effective_message.reply_text(f"没有找到事件 {event_id}。")
-
-
-async def set_preference(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_chat is None or update.effective_message is None:
-        return
-
-    preference = _command_payload(update)
-    if not preference:
-        await update.effective_message.reply_text(
-            "请写下偏好，比如：/set_preference 我一般不想上午开会"
-        )
-        return
-
-    schedule: ScheduleStore = context.application.bot_data["schedule"]
-    schedule.set_preference(update.effective_chat.id, preference)
-    await update.effective_message.reply_text("已保存你的会议偏好。")
-
-
-async def show_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_chat is None or update.effective_message is None:
-        return
-
-    schedule: ScheduleStore = context.application.bot_data["schedule"]
-    preference = schedule.get_preference(update.effective_chat.id)
-    if preference:
-        await update.effective_message.reply_text(f"你的会议偏好：\n{preference}")
-    else:
-        await update.effective_message.reply_text("还没有保存会议偏好。")
 
 
 async def b2b_ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -489,9 +294,6 @@ async def handle_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     if await _handle_b2b_message(update, context, user_text):
         return
 
-    if await _handle_pending_event_confirmation(update, context, user_text):
-        return
-
     if _is_orchestrator_bot(context):
         if await _handle_orchestrator_text(update, context, user_text):
             return
@@ -509,8 +311,8 @@ async def handle_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     except Exception:
         logger.exception("LLM request failed")
         reply = (
-            "我收到了你的消息，但本地开源模型暂时不可用。"
-            "请确认 Ollama 已启动，并已拉取配置的模型。"
+            "我收到了你的消息，但 Codex API 暂时不可用。"
+            "请确认 CODEX_API_KEY、CODEX_BASE_URL 和模型配置可用。"
         )
 
     memory.add(chat_id, "user", user_text)
@@ -762,48 +564,6 @@ async def _handle_slot_matcher_b2b_request(
     )
 
 
-async def _handle_pending_event_confirmation(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    user_text: str,
-) -> bool:
-    if update.effective_chat is None or update.effective_message is None:
-        return False
-
-    pending = context.chat_data.get(PENDING_EVENT_KEY)
-    if pending is None:
-        return False
-
-    normalized = user_text.strip().lower()
-    overwrite_words = {"\u8986\u76d6", "\u66ff\u6362", "\u8986\u76d6\u65e7\u7684", "overwrite", "replace"}
-    cancel_words = {"\u53d6\u6d88", "\u7b97\u4e86", "\u4e0d\u8981", "\u5426", "no", "n"}
-
-    if normalized in overwrite_words:
-        schedule: ScheduleStore = context.application.bot_data["schedule"]
-        if isinstance(pending, dict):
-            pending_event = pending["event"]
-            conflict_ids = [int(event_id) for event_id in pending.get("conflict_ids", [])]
-        else:
-            pending_event = pending
-            conflict_ids = []
-        event = schedule.replace_events(update.effective_chat.id, conflict_ids, pending_event)
-        context.chat_data.pop(PENDING_EVENT_KEY, None)
-        await update.effective_message.reply_text(
-            f"\u5df2\u8986\u76d6\u51b2\u7a81\u4e8b\u4ef6\u5e76\u6dfb\u52a0\uff1a{event.id}. {format_datetime_range(event.starts_at, event.ends_at)} {event.title}"
-        )
-        return True
-
-    if normalized in cancel_words:
-        context.chat_data.pop(PENDING_EVENT_KEY, None)
-        await update.effective_message.reply_text("\u5df2\u53d6\u6d88\u6dfb\u52a0\u8fd9\u4e2a\u51b2\u7a81\u65e5\u7a0b\u3002")
-        return True
-
-    await update.effective_message.reply_text(
-        "\u8fd8\u6709\u4e00\u4e2a\u51b2\u7a81\u65e5\u7a0b\u7b49\u5f85\u5904\u7406\u3002\u8bf7\u56de\u590d\u201c\u8986\u76d6\u201d\u5220\u9664\u51b2\u7a81\u4e8b\u4ef6\u5e76\u6dfb\u52a0\u65b0\u4e8b\u4ef6\uff0c\u6216\u56de\u590d\u201c\u53d6\u6d88\u201d\u653e\u5f03\u3002"
-    )
-    return True
-
-
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.exception("Telegram update failed", exc_info=context.error)
 
@@ -855,13 +615,6 @@ def build_application(profile: str | None = None) -> Application:
     private_chat = filters.ChatType.PRIVATE
     application.add_handler(CommandHandler("start", start, filters=private_chat))
     application.add_handler(CommandHandler("reset", reset, filters=private_chat))
-    application.add_handler(CommandHandler("add_event", add_event, filters=private_chat))
-    application.add_handler(CommandHandler("list_events", list_events, filters=private_chat))
-    application.add_handler(CommandHandler("free_time", free_time, filters=private_chat))
-    application.add_handler(CommandHandler("schedule_event", schedule_event, filters=private_chat))
-    application.add_handler(CommandHandler("delete_event", delete_event, filters=private_chat))
-    application.add_handler(CommandHandler("set_preference", set_preference, filters=private_chat))
-    application.add_handler(CommandHandler("show_profile", show_profile, filters=private_chat))
     application.add_handler(CommandHandler("b2b_ping", b2b_ping))
     application.add_handler(CommandHandler("b2b_status", b2b_status))
     application.add_handler(CommandHandler("b2b_calendar", b2b_calendar))
@@ -1489,28 +1242,19 @@ def _profile_from_argv(argv: list[str]) -> str | None:
 
 
 def _build_llm_clients(settings) -> tuple[LLMClient, LLMClient]:
-    if settings.llm_provider == "openai":
-        if not settings.openai_api_key:
-            raise RuntimeError(
-                "LLM_PROVIDER=openai requires CODEX_API_KEY or OPENAI_API_KEY in .env."
-            )
-        return (
-            OpenAIResponsesClient(
-                settings.openai_base_url,
-                settings.openai_api_key,
-                settings.openai_model,
-            ),
-            OpenAIResponsesClient(
-                settings.openai_base_url,
-                settings.openai_api_key,
-                settings.openai_extract_model,
-            ),
-        )
-
-    if settings.llm_provider != "ollama":
-        raise RuntimeError("LLM_PROVIDER must be 'ollama' or 'openai'.")
-
+    if not settings.codex_api_key:
+        raise RuntimeError("CODEX_API_KEY is required in .env.")
+    if not settings.codex_base_url:
+        raise RuntimeError("CODEX_BASE_URL is required in .env.")
     return (
-        OllamaClient(settings.ollama_base_url, settings.ollama_model),
-        OllamaClient(settings.ollama_base_url, settings.ollama_extract_model),
+        CodexAPIClient(
+            settings.codex_base_url,
+            settings.codex_api_key,
+            settings.codex_model,
+        ),
+        CodexAPIClient(
+            settings.codex_base_url,
+            settings.codex_api_key,
+            settings.codex_extract_model,
+        )
     )
