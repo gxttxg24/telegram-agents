@@ -20,6 +20,7 @@ from .calendar.store import ScheduleStore
 from .config import load_settings
 from .llm import CodexAPIClient, LLMClient
 from .memory import MemoryStore
+from .orchestrator.runtime_state import OrchestratorStateStore
 from .telegram.commands import b2b_calendar, b2b_debug, b2b_ping, b2b_status, b2b_weather
 from .telegram.handlers import error_handler, handle_private_text, reset, start
 
@@ -34,6 +35,7 @@ def build_application(profile: str | None = None) -> Application:
     )
     memory = MemoryStore(settings.memory_db)
     schedule = ScheduleStore(settings.schedule_db)
+    orchestrator_state = OrchestratorStateStore(settings.orchestrator_state_db)
     llm, extract_llm = _build_llm_clients(settings)
 
     application = (
@@ -49,16 +51,13 @@ def build_application(profile: str | None = None) -> Application:
     application.bot_data["llm"] = llm
     application.bot_data["extract_llm"] = extract_llm
     application.bot_data["history_turns"] = settings.history_turns
-    application.bot_data["b2b_seen_ids"] = set()
     application.bot_data["b2b_events"] = []
     application.bot_data["bot_profile"] = settings.bot_profile
     application.bot_data["orchestrator_profile"] = settings.orchestrator_profile
     application.bot_data["calendar_bot_profile"] = settings.calendar_bot_profile
     application.bot_data["weather_bot_profile"] = settings.weather_bot_profile
     application.bot_data["slot_matcher_bot_profile"] = settings.slot_matcher_bot_profile
-    application.bot_data["orchestrator_pending"] = {}
-    application.bot_data["orchestrator_pending_slots"] = {}
-    application.bot_data["orchestrator_context_by_chat"] = {}
+    application.bot_data["orchestrator_state"] = orchestrator_state
     application.bot_data["configured_bot_username"] = normalize_username(settings.telegram_username)
     application.bot_data["bot_peers"] = {
         profile: normalize_username(username)
@@ -68,6 +67,7 @@ def build_application(profile: str | None = None) -> Application:
         "persistence": str(settings.telegram_persistence_file),
         "memory_db": str(settings.memory_db),
         "schedule_db": str(settings.schedule_db),
+        "orchestrator_state_db": str(settings.orchestrator_state_db),
     }
 
     private_chat = filters.ChatType.PRIVATE
@@ -105,6 +105,12 @@ def main(profile: str | None = None) -> None:
         settings_summary.get("persistence", ""),
         settings_summary.get("memory_db", ""),
         settings_summary.get("schedule_db", ""),
+    )
+    logger.info(
+        "Orchestrator state: db=%s pending=%s seen=%s",
+        settings_summary.get("orchestrator_state_db", ""),
+        application.bot_data["orchestrator_state"].pending_count(),
+        application.bot_data["orchestrator_state"].seen_count(),
     )
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 

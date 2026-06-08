@@ -8,6 +8,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from ..b2b.protocol import make_payload_request, make_request
+from ..orchestrator.runtime_state import state_store_from_context
 from .utils import (
     command_payload,
     format_b2b_peers,
@@ -72,7 +73,7 @@ async def b2b_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     source = await own_username(context)
     configured = context.application.bot_data.get("configured_bot_username") or "(not set)"
-    seen_ids: set[str] = context.application.bot_data.setdefault("b2b_seen_ids", set())
+    state_store = state_store_from_context(context)
     profile = context.application.bot_data.get("bot_profile") or "(default)"
     events = context.application.bot_data.setdefault("b2b_events", [])
     event_text = "\n".join(f"- {event}" for event in events[-8:]) or "- 暂无"
@@ -80,7 +81,8 @@ async def b2b_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         f"bot-to-bot 已启用。Profile：{profile}\n"
         f"本 bot：{source}\n"
         f".env username：{configured}\n"
-        f"已见过结构化消息：{len(seen_ids)} 条\n"
+        f"已见过结构化消息：{state_store.seen_count()} 条\n"
+        f"等待中的 orchestrator 请求：{state_store.pending_count()} 条\n"
         f"{format_b2b_peers(context)}\n"
         "最近事件：\n"
         f"{event_text}\n"
@@ -216,5 +218,6 @@ async def b2b_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"chat: {chat_label}\n"
         f"persistence: {settings_summary.get('persistence', '')}\n"
         f"memory_db: {settings_summary.get('memory_db', '')}\n"
-        f"schedule_db: {settings_summary.get('schedule_db', '')}"
+        f"schedule_db: {settings_summary.get('schedule_db', '')}\n"
+        f"orchestrator_state_db: {settings_summary.get('orchestrator_state_db', '')}"
     )

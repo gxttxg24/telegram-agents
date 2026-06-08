@@ -7,6 +7,10 @@ import pytest
 
 import tg_agent_bot.orchestrator.workflows as workflows
 from tg_agent_bot.b2b.protocol import ACK, B2BEnvelope, parse_envelope
+from tg_agent_bot.orchestrator.runtime_state import (
+    OrchestratorStateStore,
+    state_store_from_context,
+)
 from tg_agent_bot.orchestrator.state import ActionWorkflow, WorkflowService
 from tg_agent_bot.orchestrator.weather_schedule import (
     WeatherScheduleStage,
@@ -42,6 +46,52 @@ class FakeBot:
         self.chat_actions.append({"chat_id": chat_id, "action": action})
 
 
+class FakeOrchestratorStateStore:
+    def __init__(self) -> None:
+        self.pending: dict[str, object] = {}
+        self.pending_slots: dict[int, dict] = {}
+        self.context_by_chat: dict[int, list[dict]] = {}
+        self.seen_ids: set[str] = set()
+
+    def put_pending(self, request_id: str, workflow: object) -> None:
+        self.pending[request_id] = workflow
+
+    def pop_pending(self, request_id: str) -> object | None:
+        return self.pending.pop(request_id, None)
+
+    def pending_count(self) -> int:
+        return len(self.pending)
+
+    def get_pending_slot(self, chat_id: int) -> dict | None:
+        slot = self.pending_slots.get(chat_id)
+        return dict(slot) if slot is not None else None
+
+    def put_pending_slot(self, chat_id: int, slot: dict) -> None:
+        self.pending_slots[chat_id] = dict(slot)
+
+    def pop_pending_slot(self, chat_id: int) -> dict | None:
+        return self.pending_slots.pop(chat_id, None)
+
+    def get_context(self, chat_id: int) -> list[dict]:
+        return list(self.context_by_chat.get(chat_id, []))
+
+    def append_context(self, chat_id: int, item: dict) -> None:
+        items = list(self.context_by_chat.get(chat_id, []))
+        items.append(item)
+        self.context_by_chat[chat_id] = items[-8:]
+
+    def mark_seen(self, message_id: str) -> bool:
+        already_seen = message_id in self.seen_ids
+        self.seen_ids.add(message_id)
+        return already_seen
+
+    def has_seen(self, message_id: str) -> bool:
+        return message_id in self.seen_ids
+
+    def seen_count(self) -> int:
+        return len(self.seen_ids)
+
+
 def fake_context(bot_data: dict | None = None, bot: FakeBot | None = None):
     data = {
         "bot_profile": "C",
@@ -55,6 +105,7 @@ def fake_context(bot_data: dict | None = None, bot: FakeBot | None = None):
             "C": "@OrchestratorBot",
             "D": "@SlotMatcherBot",
         },
+        "orchestrator_state": FakeOrchestratorStateStore(),
     }
     if bot_data:
         data.update(bot_data)
@@ -268,7 +319,7 @@ def test_send_orchestrator_calendar_action_sends_b2b_request_and_tracks_pending(
         "service": "calendar",
         "owner_chat_id": 1001,
     }
-    assert context.application.bot_data["orchestrator_pending"][envelope.id] is workflow
+    assert state_store_from_context(context).pending_count() == 1
 
 
 def test_send_orchestrator_weather_action_requires_configured_peer() -> None:
@@ -284,6 +335,28 @@ def test_send_orchestrator_weather_action_requires_configured_peer() -> None:
         asyncio.run(workflows.send_orchestrator_weather_action(context, workflow))
 
 
+def test_orchestrator_state_store_restores_pending_and_seen_ids(tmp_path) -> None:
+    db_path = tmp_path / "orchestrator-state.sqlite3"
+    workflow = ActionWorkflow.calendar(
+        user_chat_id=1001,
+        user_text="find free time",
+        actions=[{"action": "free_time", "date": "2099-06-10"}],
+    )
+
+    first_store = OrchestratorStateStore(db_path)
+    first_store.put_pending("req-restore", workflow)
+    first_store.mark_seen("seen-restore")
+    first_store.append_context(1001, {"user_text": "find free time"})
+
+    restored_store = OrchestratorStateStore(db_path)
+
+    restored_workflow = restored_store.pop_pending("req-restore")
+    assert isinstance(restored_workflow, ActionWorkflow)
+    assert restored_workflow.user_chat_id == 1001
+    assert restored_store.has_seen("seen-restore")
+    assert restored_store.get_context(1001) == [{"user_text": "find free time"}]
+
+
 def test_handle_orchestrator_b2b_result_continues_multi_step_calendar_workflow() -> None:
     bot = FakeBot()
     workflow = ActionWorkflow.calendar(
@@ -294,7 +367,8 @@ def test_handle_orchestrator_b2b_result_continues_multi_step_calendar_workflow()
             {"action": "add_event", "title": "second"},
         ],
     )
-    context = fake_context({"orchestrator_pending": {"req-1": workflow}}, bot)
+    context = fake_context(bot=bot)
+    state_store_from_context(context).put_pending("req-1", workflow)
 
     handled = asyncio.run(
         workflows.handle_orchestrator_b2b_result(
@@ -309,11 +383,11 @@ def test_handle_orchestrator_b2b_result_continues_multi_step_calendar_workflow()
     envelope = parse_envelope(bot.sent_messages[0]["text"])
     assert envelope is not None
     assert envelope.payload["title"] == "second"
-    assert envelope.id in context.application.bot_data["orchestrator_pending"]
+    assert state_store_from_context(context).pending_count() == 1
 
 
 def test_handle_orchestrator_b2b_result_ignores_unknown_or_unmatched_result() -> None:
-    context = fake_context({"orchestrator_pending": {}})
+    context = fake_context()
 
     assert not asyncio.run(
         workflows.handle_orchestrator_b2b_result(
@@ -366,7 +440,12 @@ def test_handle_orchestrator_text_stores_pending_weather_question(
 
     assert handled is True
     assert update.effective_message.replies == ["请告诉我地点"]
-    assert context.application.bot_data["orchestrator_pending_slots"][1001] == {
+    pending_slot = state_store_from_context(context).get_pending_slot(1001)
+    assert pending_slot is not None
+    assert {
+        key: pending_slot[key]
+        for key in ["service", "original_text", "ask_user"]
+    } == {
         "service": "weather",
         "original_text": "明天会下雨吗",
         "ask_user": "请告诉我地点",
@@ -399,6 +478,6 @@ def test_finish_orchestrator_workflow_sends_calendar_summary_and_stores_context(
     )
 
     assert bot.sent_messages == [{"chat_id": 1001, "text": "summary"}]
-    assert context.application.bot_data["orchestrator_context_by_chat"][1001] == [
+    assert state_store_from_context(context).get_context(1001) == [
         {"user_text": "add event", "count": 1}
     ]

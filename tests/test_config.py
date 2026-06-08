@@ -15,6 +15,7 @@ ENV_KEYS = {
     "TELEGRAM_PERSISTENCE_FILE",
     "BOT_MEMORY_DB",
     "BOT_SCHEDULE_DB",
+    "BOT_ORCHESTRATOR_STATE_DB",
     "BOT_HISTORY_TURNS",
     "CODEX_BASE_URL",
     "CODEX_API_KEY",
@@ -62,6 +63,7 @@ def test_load_settings_reads_profile_specific_bot_config(monkeypatch: pytest.Mon
     assert settings.codex_extract_model == "model-extract"
     assert settings.memory_db == Path("data/bot_memory_a.sqlite3")
     assert settings.schedule_db == Path("data/bot_schedule_a.sqlite3")
+    assert settings.orchestrator_state_db == Path("data/orchestrator_state_a.sqlite3")
 
 
 def test_load_settings_uses_fallback_token_and_default_profiles(
@@ -93,6 +95,7 @@ def test_profile_specific_storage_paths_override_defaults(
     monkeypatch.setenv("BOT_C_PERSISTENCE_FILE", "tmp/c.pickle")
     monkeypatch.setenv("BOT_C_MEMORY_DB", "tmp/c-memory.sqlite3")
     monkeypatch.setenv("BOT_C_SCHEDULE_DB", "tmp/c-schedule.sqlite3")
+    monkeypatch.setenv("BOT_C_ORCHESTRATOR_STATE_DB", "tmp/c-state.sqlite3")
     monkeypatch.setenv("CODEX_BASE_URL", "https://example.test")
     monkeypatch.setenv("CODEX_API_KEY", "test-key")
 
@@ -101,6 +104,7 @@ def test_profile_specific_storage_paths_override_defaults(
     assert settings.telegram_persistence_file == Path("tmp/c.pickle")
     assert settings.memory_db == Path("tmp/c-memory.sqlite3")
     assert settings.schedule_db == Path("tmp/c-schedule.sqlite3")
+    assert settings.orchestrator_state_db == Path("tmp/c-state.sqlite3")
 
 
 def test_missing_token_raises(monkeypatch: pytest.MonkeyPatch) -> None:

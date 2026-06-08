@@ -21,6 +21,7 @@ class Settings:
     history_turns: int
     memory_db: Path
     schedule_db: Path
+    orchestrator_state_db: Path
     orchestrator_profile: str
     calendar_bot_profile: str
     weather_bot_profile: str
@@ -59,6 +60,13 @@ def load_settings(profile: str | None = None) -> Settings:
         _profile_env(bot_profile, "SCHEDULE_DB")
         or os.getenv("BOT_SCHEDULE_DB", f"data/bot_schedule{profile_suffix}.sqlite3")
     )
+    orchestrator_state_db = Path(
+        _profile_env(bot_profile, "ORCHESTRATOR_STATE_DB")
+        or os.getenv(
+            "BOT_ORCHESTRATOR_STATE_DB",
+            f"data/orchestrator_state{profile_suffix}.sqlite3",
+        )
+    )
     codex_model = (
         os.getenv("CODEX_MODEL", "").strip()
         or "gpt-5.2"
@@ -80,6 +88,7 @@ def load_settings(profile: str | None = None) -> Settings:
         history_turns=max(1, history_turns),
         memory_db=memory_db,
         schedule_db=schedule_db,
+        orchestrator_state_db=orchestrator_state_db,
         orchestrator_profile=_normalize_profile(os.getenv("ORCHESTRATOR_PROFILE", "C")),
         calendar_bot_profile=_normalize_profile(os.getenv("CALENDAR_BOT_PROFILE", "A")),
         weather_bot_profile=_normalize_profile(os.getenv("WEATHER_BOT_PROFILE", "B")),

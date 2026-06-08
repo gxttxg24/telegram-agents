@@ -9,6 +9,7 @@ from telegram.ext import ContextTypes
 
 from ..calendar.service import CalendarServiceError, handle_calendar_request, is_calendar_request
 from ..calendar.store import ScheduleStore
+from ..orchestrator.runtime_state import state_store_from_context
 from ..orchestrator.workflows import handle_orchestrator_b2b_result
 from ..slot_matcher.service import (
     SlotMatcherServiceError,
@@ -51,9 +52,8 @@ async def handle_b2b_message(
         return False
 
     my_username = await own_username(context)
-    seen_ids: set[str] = context.application.bot_data.setdefault("b2b_seen_ids", set())
-    already_seen = envelope.id in seen_ids
-    seen_ids.add(envelope.id)
+    state_store = state_store_from_context(context)
+    already_seen = state_store.mark_seen(envelope.id)
 
     if already_seen:
         remember_b2b_event(context, f"ignored duplicate {envelope.message_type} {envelope.id}")
@@ -141,9 +141,9 @@ async def handle_b2b_message(
         await handle_slot_matcher_b2b_request(context, envelope, my_username)
         return True
 
-    if should_ack(envelope, seen_ids - {envelope.id}, my_username):
+    if should_ack(envelope, set(), my_username):
         ack = make_ack(source=my_username, request=envelope)
-        seen_ids.add(ack.id)
+        state_store.mark_seen(ack.id)
         await context.bot.send_message(chat_id=envelope.source, text=ack.to_text())
         remember_b2b_event(
             context,
@@ -171,7 +171,6 @@ async def handle_calendar_b2b_request(
     my_username: str,
 ) -> None:
     schedule: ScheduleStore = context.application.bot_data["schedule"]
-    seen_ids: set[str] = context.application.bot_data.setdefault("b2b_seen_ids", set())
 
     try:
         result_payload = handle_calendar_request(schedule, envelope.payload)
@@ -194,7 +193,7 @@ async def handle_calendar_b2b_request(
         }
 
     response = make_response(source=my_username, request=envelope, payload=result_payload)
-    seen_ids.add(response.id)
+    state_store_from_context(context).mark_seen(response.id)
     await context.bot.send_message(chat_id=envelope.source, text=telegram_safe_envelope_text(response))
     status = "ok" if result_payload.get("ok") else "error"
     remember_b2b_event(
@@ -208,8 +207,6 @@ async def handle_weather_b2b_request(
     envelope,
     my_username: str,
 ) -> None:
-    seen_ids: set[str] = context.application.bot_data.setdefault("b2b_seen_ids", set())
-
     try:
         result_payload = await handle_weather_request(envelope.payload)
     except WeatherServiceError as exc:
@@ -231,7 +228,7 @@ async def handle_weather_b2b_request(
         }
 
     response = make_response(source=my_username, request=envelope, payload=result_payload)
-    seen_ids.add(response.id)
+    state_store_from_context(context).mark_seen(response.id)
     await context.bot.send_message(chat_id=envelope.source, text=telegram_safe_envelope_text(response))
     status = "ok" if result_payload.get("ok") else "error"
     remember_b2b_event(
@@ -245,8 +242,6 @@ async def handle_slot_matcher_b2b_request(
     envelope,
     my_username: str,
 ) -> None:
-    seen_ids: set[str] = context.application.bot_data.setdefault("b2b_seen_ids", set())
-
     try:
         result_payload = handle_slot_matcher_request(envelope.payload)
     except SlotMatcherServiceError as exc:
@@ -268,7 +263,7 @@ async def handle_slot_matcher_b2b_request(
         }
 
     response = make_response(source=my_username, request=envelope, payload=result_payload)
-    seen_ids.add(response.id)
+    state_store_from_context(context).mark_seen(response.id)
     await context.bot.send_message(chat_id=envelope.source, text=telegram_safe_envelope_text(response))
     status = "ok" if result_payload.get("ok") else "error"
     remember_b2b_event(

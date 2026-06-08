@@ -19,6 +19,7 @@ from .planner import (
     summarize_weather_results,
 )
 from .state import ActionWorkflow, WorkflowService
+from .runtime_state import state_store_from_context
 from .weather_schedule import (
     WeatherScheduleState,
     WeatherScheduleNext,
@@ -29,8 +30,6 @@ from .weather_schedule import (
 
 
 logger = logging.getLogger(__name__)
-PendingWorkflow = ActionWorkflow | WeatherScheduleState
-WorkflowMap = dict[str, PendingWorkflow]
 
 async def handle_orchestrator_text(
     update: Update,
@@ -46,17 +45,10 @@ async def handle_orchestrator_text(
     )
 
     extract_llm: LLMClient = context.application.bot_data["extract_llm"]
-    context_by_chat: dict[int, list[dict]] = context.application.bot_data.setdefault(
-        "orchestrator_context_by_chat",
-        {},
-    )
+    state_store = state_store_from_context(context)
     chat_id = update.effective_chat.id
-    recent_context = context_by_chat.setdefault(chat_id, [])
-    pending_slots: dict[int, dict] = context.application.bot_data.setdefault(
-        "orchestrator_pending_slots",
-        {},
-    )
-    pending = pending_slots.get(chat_id)
+    recent_context = state_store.get_context(chat_id)
+    pending = state_store.get_pending_slot(chat_id)
 
     if pending and pending.get("service") == "weather":
         combined_text = (
@@ -73,7 +65,7 @@ async def handle_orchestrator_text(
             return True
 
         if plan.get("ok") is True:
-            pending_slots.pop(chat_id, None)
+            state_store.pop_pending_slot(chat_id)
             await start_orchestrator_weather_workflow(
                 update,
                 context,
@@ -83,6 +75,7 @@ async def handle_orchestrator_text(
             return True
 
         pending["last_user_text"] = user_text
+        state_store.put_pending_slot(chat_id, pending)
         ask_user = str(plan.get("ask_user") or plan.get("error") or "还缺少地点或日期。")
         await update.effective_message.reply_text(ask_user)
         return True
@@ -99,11 +92,14 @@ async def handle_orchestrator_text(
 
         if plan.get("ok") is not True:
             ask_user = str(plan.get("ask_user") or plan.get("error") or "请告诉我地点和日期。")
-            pending_slots[chat_id] = {
-                "service": "weather",
-                "original_text": user_text,
-                "ask_user": ask_user,
-            }
+            state_store.put_pending_slot(
+                chat_id,
+                {
+                    "service": "weather",
+                    "original_text": user_text,
+                    "ask_user": ask_user,
+                },
+            )
             await update.effective_message.reply_text(ask_user)
             return True
 
@@ -203,11 +199,7 @@ async def send_orchestrator_calendar_action(
         payload=action_payload,
     )
     sent = await context.bot.send_message(chat_id=target_username, text=message.to_text())
-    pending: WorkflowMap = context.application.bot_data.setdefault(
-        "orchestrator_pending",
-        {},
-    )
-    pending[message.id] = workflow
+    state_store_from_context(context).put_pending(message.id, workflow)
     remember_b2b_event(
         context,
         f"orchestrator sent calendar {action_payload.get('action')} request {message.id} to {target_username} telegram_message_id={sent.message_id}",
@@ -233,11 +225,7 @@ async def send_orchestrator_weather_action(
         payload=action_payload,
     )
     sent = await context.bot.send_message(chat_id=target_username, text=message.to_text())
-    pending: WorkflowMap = context.application.bot_data.setdefault(
-        "orchestrator_pending",
-        {},
-    )
-    pending[message.id] = workflow
+    state_store_from_context(context).put_pending(message.id, workflow)
     remember_b2b_event(
         context,
         f"orchestrator sent weather {action_payload.get('date')} request {message.id} to {target_username} telegram_message_id={sent.message_id}",
@@ -263,11 +251,7 @@ async def send_orchestrator_slot_matcher_action(
         payload=action_payload,
     )
     sent = await context.bot.send_message(chat_id=target_username, text=message.to_text())
-    pending: WorkflowMap = context.application.bot_data.setdefault(
-        "orchestrator_pending",
-        {},
-    )
-    pending[message.id] = workflow
+    state_store_from_context(context).put_pending(message.id, workflow)
     remember_b2b_event(
         context,
         f"orchestrator sent slot_matcher request {message.id} to {target_username} telegram_message_id={sent.message_id}",
@@ -286,11 +270,7 @@ async def handle_orchestrator_b2b_result(
     if not envelope.correlation_id:
         return False
 
-    pending: WorkflowMap = context.application.bot_data.setdefault(
-        "orchestrator_pending",
-        {},
-    )
-    workflow = pending.pop(envelope.correlation_id, None)
+    workflow = state_store_from_context(context).pop_pending(envelope.correlation_id)
     if workflow is None:
         return False
 
@@ -374,19 +354,14 @@ async def finish_weather_schedule_workflow(
             ),
         )
 
-        context_by_chat: dict[int, list[dict]] = context.application.bot_data.setdefault(
-            "orchestrator_context_by_chat",
-            {},
-        )
-        recent_context = context_by_chat.setdefault(user_chat_id, [])
-        recent_context.append(
+        state_store_from_context(context).append_context(
+            user_chat_id,
             calendar_context_from_result(
                 workflow.user_text,
                 workflow.actions,
                 [add_event_payload],
-            )
+            ),
         )
-        del recent_context[:-8]
         return
 
     await context.bot.send_message(
@@ -413,19 +388,14 @@ async def finish_orchestrator_workflow(
     lines = [summarize_calendar_result(result) for result in results]
     await context.bot.send_message(chat_id=user_chat_id, text="\n\n".join(lines))
 
-    context_by_chat: dict[int, list[dict]] = context.application.bot_data.setdefault(
-        "orchestrator_context_by_chat",
-        {},
-    )
-    recent_context = context_by_chat.setdefault(user_chat_id, [])
-    recent_context.append(
+    state_store_from_context(context).append_context(
+        user_chat_id,
         calendar_context_from_result(
             workflow.user_text,
             actions,
             results,
-        )
+        ),
     )
-    del recent_context[:-8]
 
 
 def is_orchestrator_bot(context: ContextTypes.DEFAULT_TYPE) -> bool:
