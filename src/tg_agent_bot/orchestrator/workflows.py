@@ -6,6 +6,7 @@ import re
 
 from telegram.constants import ChatAction
 from telegram.ext import ContextTypes
+from telegram import Update
 
 from ..b2b.protocol import make_payload_request
 from ..llm import LLMClient
