@@ -1,5 +1,35 @@
+# Virtual environments
 .venv/
+venv/
+env/
+
+# Python cache
 __pycache__/
 *.py[cod]
+*$py.class
+
+# Test/cache tooling
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Packaging/build output
+build/
+dist/
+*.egg-info/
+
+# Local secrets and machine-specific env files
 .env
+.env.*
+!.env.example
+
+# Local runtime data
 data/
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+*.pickle
+
+# Editor/OS noise
+.DS_Store
+Thumbs.db
