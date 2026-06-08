@@ -18,9 +18,19 @@ from .planner import (
     summarize_calendar_result,
     summarize_weather_results,
 )
+from .state import ActionWorkflow, WorkflowService
+from .weather_schedule import (
+    WeatherScheduleState,
+    WeatherScheduleNext,
+    advance_weather_schedule,
+    build_slot_matcher_payload,
+    build_weather_schedule_workflow,
+)
 
 
 logger = logging.getLogger(__name__)
+PendingWorkflow = ActionWorkflow | WeatherScheduleState
+WorkflowMap = dict[str, PendingWorkflow]
 
 async def handle_orchestrator_text(
     update: Update,
@@ -123,14 +133,11 @@ async def handle_orchestrator_text(
         await update.effective_message.reply_text(ask_user)
         return True
 
-    actions = plan["actions"]
-    workflow = {
-        "user_chat_id": chat_id,
-        "user_text": user_text,
-        "actions": actions,
-        "index": 0,
-        "results": [],
-    }
+    workflow = ActionWorkflow.calendar(
+        user_chat_id=chat_id,
+        user_text=user_text,
+        actions=plan["actions"],
+    )
 
     try:
         await send_orchestrator_calendar_action(context, workflow)
@@ -153,21 +160,19 @@ async def start_orchestrator_weather_workflow(
     if update.effective_chat is None or update.effective_message is None:
         return
 
-    workflow = {
-        "service": "weather_schedule" if plan.get("schedule_requested") else "weather",
-        "stage": "weather",
-        "user_chat_id": update.effective_chat.id,
-        "user_text": user_text,
-        "goal": str(plan.get("goal", "forecast")),
-        "activity_title": str(plan.get("activity_title") or "天气相关安排"),
-        "duration_minutes": int(plan.get("duration_minutes") or 60),
-        "rain_threshold": 30,
-        "actions": plan["actions"],
-        "index": 0,
-        "results": [],
-        "weather_results": [],
-        "calendar_results": [],
-    }
+    if plan.get("schedule_requested"):
+        workflow = build_weather_schedule_workflow(
+            user_chat_id=update.effective_chat.id,
+            user_text=user_text,
+            plan=plan,
+        )
+    else:
+        workflow = ActionWorkflow.weather(
+            user_chat_id=update.effective_chat.id,
+            user_text=user_text,
+            goal=str(plan.get("goal", "forecast")),
+            actions=plan["actions"],
+        )
     try:
         await send_orchestrator_weather_action(context, workflow)
     except Exception as exc:
@@ -180,13 +185,11 @@ async def start_orchestrator_weather_workflow(
 
 async def send_orchestrator_calendar_action(
     context: ContextTypes.DEFAULT_TYPE,
-    workflow: dict,
+    workflow: ActionWorkflow | WeatherScheduleState,
 ) -> None:
-    actions = workflow["actions"]
-    index = int(workflow["index"])
-    action_payload = dict(actions[index])
+    action_payload = workflow.current_action()
     action_payload["service"] = "calendar"
-    action_payload["owner_chat_id"] = int(workflow["user_chat_id"])
+    action_payload["owner_chat_id"] = workflow.user_chat_id
 
     calendar_profile = str(context.application.bot_data.get("calendar_bot_profile") or "A")
     target_username = resolve_b2b_target(context, calendar_profile)
@@ -200,7 +203,7 @@ async def send_orchestrator_calendar_action(
         payload=action_payload,
     )
     sent = await context.bot.send_message(chat_id=target_username, text=message.to_text())
-    pending: dict[str, dict] = context.application.bot_data.setdefault(
+    pending: WorkflowMap = context.application.bot_data.setdefault(
         "orchestrator_pending",
         {},
     )
@@ -213,11 +216,9 @@ async def send_orchestrator_calendar_action(
 
 async def send_orchestrator_weather_action(
     context: ContextTypes.DEFAULT_TYPE,
-    workflow: dict,
+    workflow: ActionWorkflow | WeatherScheduleState,
 ) -> None:
-    actions = workflow["actions"]
-    index = int(workflow["index"])
-    action_payload = dict(actions[index])
+    action_payload = workflow.current_action()
     action_payload["service"] = "weather"
 
     weather_profile = str(context.application.bot_data.get("weather_bot_profile") or "B")
@@ -232,7 +233,7 @@ async def send_orchestrator_weather_action(
         payload=action_payload,
     )
     sent = await context.bot.send_message(chat_id=target_username, text=message.to_text())
-    pending: dict[str, dict] = context.application.bot_data.setdefault(
+    pending: WorkflowMap = context.application.bot_data.setdefault(
         "orchestrator_pending",
         {},
     )
@@ -245,11 +246,9 @@ async def send_orchestrator_weather_action(
 
 async def send_orchestrator_slot_matcher_action(
     context: ContextTypes.DEFAULT_TYPE,
-    workflow: dict,
+    workflow: WeatherScheduleState,
 ) -> None:
-    actions = workflow["actions"]
-    index = int(workflow["index"])
-    action_payload = dict(actions[index])
+    action_payload = workflow.current_action()
     action_payload["service"] = "slot_matcher"
 
     matcher_profile = str(context.application.bot_data.get("slot_matcher_bot_profile") or "D")
@@ -264,7 +263,7 @@ async def send_orchestrator_slot_matcher_action(
         payload=action_payload,
     )
     sent = await context.bot.send_message(chat_id=target_username, text=message.to_text())
-    pending: dict[str, dict] = context.application.bot_data.setdefault(
+    pending: WorkflowMap = context.application.bot_data.setdefault(
         "orchestrator_pending",
         {},
     )
@@ -287,7 +286,7 @@ async def handle_orchestrator_b2b_result(
     if not envelope.correlation_id:
         return False
 
-    pending: dict[str, dict] = context.application.bot_data.setdefault(
+    pending: WorkflowMap = context.application.bot_data.setdefault(
         "orchestrator_pending",
         {},
     )
@@ -295,25 +294,27 @@ async def handle_orchestrator_b2b_result(
     if workflow is None:
         return False
 
-    if workflow.get("service") == "weather_schedule":
+    if isinstance(workflow, WeatherScheduleState):
         await handle_weather_schedule_result(context, workflow, envelope.payload)
         return True
 
-    workflow["results"].append(envelope.payload)
-    actions = workflow["actions"]
-    index = int(workflow["index"])
-    done = envelope.payload.get("ok") is not True or index >= len(actions) - 1
+    if not isinstance(workflow, ActionWorkflow):
+        logger.warning("Unknown orchestrator workflow type: %r", type(workflow))
+        return False
+
+    workflow.append_result(envelope.payload)
+    done = envelope.payload.get("ok") is not True or not workflow.has_next_action()
     if not done:
-        workflow["index"] = index + 1
+        workflow.advance()
         try:
-            if workflow.get("service") == "weather":
+            if workflow.service is WorkflowService.WEATHER:
                 await send_orchestrator_weather_action(context, workflow)
             else:
                 await send_orchestrator_calendar_action(context, workflow)
         except Exception as exc:
             logger.exception("Failed to continue orchestrator workflow")
             await context.bot.send_message(
-                chat_id=int(workflow["user_chat_id"]),
+                chat_id=workflow.user_chat_id,
                 text=f"前一步操作完成了，但继续下一步失败：{exc}",
             )
         return True
@@ -324,126 +325,42 @@ async def handle_orchestrator_b2b_result(
 
 async def handle_weather_schedule_result(
     context: ContextTypes.DEFAULT_TYPE,
-    workflow: dict,
+    workflow: WeatherScheduleState,
     payload: dict,
 ) -> None:
-    user_chat_id = int(workflow["user_chat_id"])
-    stage = str(workflow.get("stage", "weather"))
+    user_chat_id = workflow.user_chat_id
+    transition = advance_weather_schedule(workflow, payload)
 
-    if payload.get("ok") is not True:
-        await context.bot.send_message(
-            chat_id=user_chat_id,
-            text=f"工作流在 {stage} 阶段失败：{payload.get('error') or '未知错误'}",
-        )
+    if transition.next_step is WeatherScheduleNext.SEND_WEATHER:
+        await send_orchestrator_weather_action(context, workflow)
         return
 
-    if stage == "weather":
-        workflow["weather_results"].append(payload)
-        if int(workflow["index"]) < len(workflow["actions"]) - 1:
-            workflow["index"] = int(workflow["index"]) + 1
-            await send_orchestrator_weather_action(context, workflow)
-            return
-
-        calendar_actions = [
-            {
-                "action": "free_time",
-                "date": result.get("date"),
-                "min_duration_minutes": int(workflow.get("duration_minutes") or 60),
-            }
-            for result in workflow["weather_results"]
-            if result.get("date")
-        ]
-        if not calendar_actions:
-            await context.bot.send_message(chat_id=user_chat_id, text="天气查询完成，但没有拿到可用日期。")
-            return
-        workflow["stage"] = "calendar"
-        workflow["actions"] = calendar_actions
-        workflow["index"] = 0
+    if transition.next_step is WeatherScheduleNext.SEND_CALENDAR:
         await send_orchestrator_calendar_action(context, workflow)
         return
 
-    if stage == "calendar":
-        workflow["calendar_results"].append(payload)
-        if int(workflow["index"]) < len(workflow["actions"]) - 1:
-            workflow["index"] = int(workflow["index"]) + 1
-            await send_orchestrator_calendar_action(context, workflow)
-            return
-
-        matcher_payload = build_slot_matcher_payload(workflow)
-        if matcher_payload is None:
-            await context.bot.send_message(chat_id=user_chat_id, text="没有拿到可匹配的天气时段或空闲时间。")
-            return
-        workflow["stage"] = "slot_matcher"
-        workflow["actions"] = [matcher_payload]
-        workflow["index"] = 0
+    if transition.next_step is WeatherScheduleNext.SEND_SLOT_MATCHER:
         await send_orchestrator_slot_matcher_action(context, workflow)
         return
 
-    if stage == "slot_matcher":
-        matches = payload.get("matches") or []
-        if not matches:
-            await context.bot.send_message(
-                chat_id=user_chat_id,
-                text="我综合天气和你的空闲时间后，没有找到合适的共同时间段。",
-            )
-            return
-        match = matches[0]
-        workflow["selected_match"] = match
-        workflow["stage"] = "add_event"
-        workflow["actions"] = [
-            {
-                "action": "add_event",
-                "title": str(workflow.get("activity_title") or "天气相关安排"),
-                "starts_at": match["starts_at"],
-                "ends_at": match["ends_at"],
-                "on_conflict": "reject",
-            }
-        ]
-        workflow["index"] = 0
-        await send_orchestrator_calendar_action(context, workflow)
-        return
-
-    if stage == "add_event":
+    if transition.next_step is WeatherScheduleNext.FINISH:
         await finish_weather_schedule_workflow(context, workflow, payload)
         return
 
-    await context.bot.send_message(chat_id=user_chat_id, text=f"未知工作流阶段：{stage}")
-
-
-def build_slot_matcher_payload(workflow: dict) -> dict | None:
-    weather_periods: list[dict] = []
-    for result in workflow.get("weather_results", []):
-        for period in result.get("periods") or []:
-            if isinstance(period, dict):
-                weather_periods.append(period)
-
-    calendar_blocks: list[dict] = []
-    for result in workflow.get("calendar_results", []):
-        for block in result.get("blocks") or []:
-            if isinstance(block, dict):
-                calendar_blocks.append(block)
-
-    if not weather_periods or not calendar_blocks:
-        return None
-
-    return {
-        "action": "match_slots",
-        "goal": str(workflow.get("goal", "avoid_rain")),
-        "duration_minutes": int(workflow.get("duration_minutes") or 60),
-        "rain_threshold": int(workflow.get("rain_threshold") or 30),
-        "weather_periods": weather_periods,
-        "calendar_blocks": calendar_blocks,
-    }
+    await context.bot.send_message(
+        chat_id=user_chat_id,
+        text=transition.message or "天气排程工作流已结束。",
+    )
 
 
 async def finish_weather_schedule_workflow(
     context: ContextTypes.DEFAULT_TYPE,
-    workflow: dict,
+    workflow: WeatherScheduleState,
     add_event_payload: dict,
 ) -> None:
-    user_chat_id = int(workflow["user_chat_id"])
-    match = workflow.get("selected_match") or {}
-    title = str(workflow.get("activity_title") or "天气相关安排")
+    user_chat_id = workflow.user_chat_id
+    match = workflow.selected_match or {}
+    title = workflow.activity_title
     if add_event_payload.get("ok") is True and add_event_payload.get("added"):
         event = add_event_payload.get("event") or {}
         probability = match.get("max_precipitation_probability")
@@ -464,8 +381,8 @@ async def finish_weather_schedule_workflow(
         recent_context = context_by_chat.setdefault(user_chat_id, [])
         recent_context.append(
             calendar_context_from_result(
-                str(workflow.get("user_text", "")),
-                workflow.get("actions", []),
+                workflow.user_text,
+                workflow.actions,
                 [add_event_payload],
             )
         )
@@ -480,15 +397,15 @@ async def finish_weather_schedule_workflow(
 
 async def finish_orchestrator_workflow(
     context: ContextTypes.DEFAULT_TYPE,
-    workflow: dict,
+    workflow: ActionWorkflow,
 ) -> None:
-    user_chat_id = int(workflow["user_chat_id"])
-    results = workflow["results"]
-    actions = workflow["actions"]
-    if workflow.get("service") == "weather":
+    user_chat_id = workflow.user_chat_id
+    results = workflow.results
+    actions = workflow.actions
+    if workflow.service is WorkflowService.WEATHER:
         text = summarize_weather_results(
             results,
-            goal=str(workflow.get("goal", "forecast")),
+            goal=workflow.goal,
         )
         await context.bot.send_message(chat_id=user_chat_id, text=text)
         return
@@ -503,7 +420,7 @@ async def finish_orchestrator_workflow(
     recent_context = context_by_chat.setdefault(user_chat_id, [])
     recent_context.append(
         calendar_context_from_result(
-            str(workflow.get("user_text", "")),
+            workflow.user_text,
             actions,
             results,
         )

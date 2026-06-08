@@ -126,6 +126,7 @@ agent_test/
         __init__.py
         planner.py
         workflows.py
+        weather_schedule.py
         summaries.py
         state.py
       slot_matcher/
@@ -344,13 +345,21 @@ agent_test/
 
 `src/tg_agent_bot/orchestrator/workflows.py`
 
-- Orchestrator 多步工作流状态机。
+- Orchestrator 多步工作流路由和执行层。
 - 判断当前 bot 是否是 C。
 - 识别天气类请求。
 - 发起 CalendarBot、WeatherBot、SlotMatcherBot 请求。
-- 保存 pending workflow。
+- 将 pending workflow 保存为显式模型对象，而不是裸 dict。
 - 收到 result 后按 correlation id 推进下一步。
-- 负责天气感知安排流程：天气 -> 空闲时间 -> 匹配 -> 写入日程 -> 汇报用户。
+- 根据 workflow 类型分派普通日程/天气流程或天气排程流程。
+
+`src/tg_agent_bot/orchestrator/weather_schedule.py`
+
+- 天气感知安排的业务状态机。
+- 定义 `WeatherScheduleStage`、`WeatherScheduleNext` 和 `WeatherScheduleState`。
+- 负责推进：天气 -> 空闲时间 -> 匹配 -> 写入日程。
+- 生成 CalendarBot 的空闲时间 action、SlotMatcherBot 的匹配 payload 和最终 add_event action。
+- `advance_weather_schedule()` 是纯状态推进入口，Telegram/B2B 发送仍由 `workflows.py` 完成。
 
 `src/tg_agent_bot/orchestrator/summaries.py`
 
@@ -359,8 +368,28 @@ agent_test/
 
 `src/tg_agent_bot/orchestrator/state.py`
 
-- Orchestrator 状态相关代码的预留模块。
-- 当前主要状态仍保存在 `Application.bot_data` 中。
+- Orchestrator 普通 workflow 状态模型。
+- 定义 `WorkflowService` 和 `ActionWorkflow`。
+- `ActionWorkflow` 表示普通 Calendar/Weather 多步流程，包含 service、user_chat_id、user_text、actions、index、results 和 goal。
+- 提供 `current_action()`、`append_result()`、`has_next_action()`、`advance()` 等状态操作。
+
+### Orchestrator 状态模型
+
+`Application.bot_data["orchestrator_pending"]` 按 B2B correlation id 保存 pending workflow，但 value 不是裸 dict：
+
+```text
+correlation_id -> ActionWorkflow | WeatherScheduleState
+```
+
+普通日程/天气流程使用 `ActionWorkflow`。天气感知安排使用 `WeatherScheduleState`，其阶段由 `WeatherScheduleStage` 枚举约束，避免用任意字符串维护状态。
+
+`workflows.py` 只负责：
+
+- 创建 workflow 模型。
+- 发送当前 action 到 A/B/D。
+- 收到 B2B result 后取出 pending workflow。
+- 根据模型类型调用普通流程推进或 `advance_weather_schedule()`。
+- 把最终结果发回用户。
 
 ## tests 目录
 

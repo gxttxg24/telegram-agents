@@ -7,6 +7,14 @@ import pytest
 
 import tg_agent_bot.orchestrator.workflows as workflows
 from tg_agent_bot.b2b.protocol import ACK, B2BEnvelope, parse_envelope
+from tg_agent_bot.orchestrator.state import ActionWorkflow, WorkflowService
+from tg_agent_bot.orchestrator.weather_schedule import (
+    WeatherScheduleStage,
+    WeatherScheduleState,
+    WeatherScheduleNext,
+    advance_weather_schedule,
+    build_weather_schedule_workflow,
+)
 
 
 class FakeMessage:
@@ -90,33 +98,39 @@ def test_looks_like_weather_request_accepts_common_chinese_terms() -> None:
 
 
 def test_build_slot_matcher_payload_combines_weather_and_calendar_results() -> None:
+    workflow = WeatherScheduleState(
+        user_chat_id=1001,
+        user_text="安排打球",
+        goal="avoid_rain",
+        activity_title="打球",
+        duration_minutes=90,
+        rain_threshold=40,
+        actions=[{"action": "match_slots"}],
+        weather_results=[
+            {
+                "periods": [
+                    {
+                        "starts_at": "2099-06-10T09:00",
+                        "ends_at": "2099-06-10T12:00",
+                        "max_precipitation_probability": 10,
+                    }
+                ]
+            }
+        ],
+        calendar_results=[
+            {
+                "blocks": [
+                    {
+                        "starts_at": "2099-06-10T10:00:00+08:00",
+                        "ends_at": "2099-06-10T12:00:00+08:00",
+                    }
+                ]
+            }
+        ],
+    )
+
     payload = workflows.build_slot_matcher_payload(
-        {
-            "goal": "avoid_rain",
-            "duration_minutes": 90,
-            "rain_threshold": 40,
-            "weather_results": [
-                {
-                    "periods": [
-                        {
-                            "starts_at": "2099-06-10T09:00",
-                            "ends_at": "2099-06-10T12:00",
-                            "max_precipitation_probability": 10,
-                        }
-                    ]
-                }
-            ],
-            "calendar_results": [
-                {
-                    "blocks": [
-                        {
-                            "starts_at": "2099-06-10T10:00:00+08:00",
-                            "ends_at": "2099-06-10T12:00:00+08:00",
-                        }
-                    ]
-                }
-            ],
-        }
+        workflow
     )
 
     assert payload == {
@@ -141,18 +155,105 @@ def test_build_slot_matcher_payload_combines_weather_and_calendar_results() -> N
 
 
 def test_build_slot_matcher_payload_returns_none_without_inputs() -> None:
-    assert workflows.build_slot_matcher_payload({"weather_results": [], "calendar_results": []}) is None
+    workflow = WeatherScheduleState(
+        user_chat_id=1001,
+        user_text="安排打球",
+        goal="avoid_rain",
+        activity_title="打球",
+        duration_minutes=90,
+        rain_threshold=40,
+        actions=[{"action": "match_slots"}],
+    )
+
+    assert workflows.build_slot_matcher_payload(workflow) is None
+
+
+def test_weather_schedule_workflow_uses_typed_stage_transitions() -> None:
+    workflow = build_weather_schedule_workflow(
+        user_chat_id=1001,
+        user_text="这周末找个不下雨的时间打球",
+        plan={
+            "goal": "avoid_rain",
+            "activity_title": "打球",
+            "duration_minutes": 120,
+            "actions": [
+                {"action": "hourly_forecast", "date": "2099-06-12"},
+            ],
+        },
+    )
+
+    transition = advance_weather_schedule(
+        workflow,
+        {
+            "kind": "weather.result",
+            "ok": True,
+            "date": "2099-06-12",
+            "periods": [{"starts_at": "2099-06-12T09:00", "ends_at": "2099-06-12T12:00"}],
+        },
+    )
+
+    assert transition.next_step is WeatherScheduleNext.SEND_CALENDAR
+    assert workflow.stage is WeatherScheduleStage.CALENDAR
+    assert workflow.actions == [
+        {
+            "action": "free_time",
+            "date": "2099-06-12",
+            "min_duration_minutes": 120,
+        }
+    ]
+    assert workflow.weather_results[0]["date"] == "2099-06-12"
+
+
+def test_weather_schedule_slot_matcher_transition_builds_add_event_action() -> None:
+    workflow = WeatherScheduleState(
+        user_chat_id=1001,
+        user_text="安排打球",
+        goal="avoid_rain",
+        activity_title="打球",
+        duration_minutes=120,
+        rain_threshold=30,
+        actions=[{"action": "match_slots"}],
+        stage=WeatherScheduleStage.SLOT_MATCHER,
+    )
+
+    transition = advance_weather_schedule(
+        workflow,
+        {
+            "kind": "slot_matcher.result",
+            "ok": True,
+            "matches": [
+                {
+                    "starts_at": "2099-06-12T09:00:00+08:00",
+                    "ends_at": "2099-06-12T11:00:00+08:00",
+                    "max_precipitation_probability": 10,
+                }
+            ],
+        },
+    )
+
+    assert transition.next_step is WeatherScheduleNext.SEND_CALENDAR
+    assert workflow.stage is WeatherScheduleStage.ADD_EVENT
+    assert workflow.selected_match is not None
+    assert workflow.selected_match["max_precipitation_probability"] == 10
+    assert workflow.actions == [
+        {
+            "action": "add_event",
+            "title": "打球",
+            "starts_at": "2099-06-12T09:00:00+08:00",
+            "ends_at": "2099-06-12T11:00:00+08:00",
+            "on_conflict": "reject",
+        }
+    ]
 
 
 def test_send_orchestrator_calendar_action_sends_b2b_request_and_tracks_pending() -> None:
     bot = FakeBot()
     context = fake_context(bot=bot)
-    workflow = {
-        "user_chat_id": 1001,
-        "actions": [{"action": "free_time", "date": "2099-06-10"}],
-        "index": 0,
-        "results": [],
-    }
+    workflow = ActionWorkflow.calendar(
+        user_chat_id=1001,
+        user_text="find free time",
+        actions=[{"action": "free_time", "date": "2099-06-10"}],
+    )
 
     asyncio.run(workflows.send_orchestrator_calendar_action(context, workflow))
 
@@ -172,11 +273,12 @@ def test_send_orchestrator_calendar_action_sends_b2b_request_and_tracks_pending(
 
 def test_send_orchestrator_weather_action_requires_configured_peer() -> None:
     context = fake_context({"bot_peers": {"A": "@CalendarBot"}})
-    workflow = {
-        "user_chat_id": 1001,
-        "actions": [{"action": "hourly_forecast", "date": "2099-06-10"}],
-        "index": 0,
-    }
+    workflow = ActionWorkflow.weather(
+        user_chat_id=1001,
+        user_text="weather",
+        goal="forecast",
+        actions=[{"action": "hourly_forecast", "date": "2099-06-10"}],
+    )
 
     with pytest.raises(RuntimeError, match="WeatherBot profile B is not configured"):
         asyncio.run(workflows.send_orchestrator_weather_action(context, workflow))
@@ -184,16 +286,14 @@ def test_send_orchestrator_weather_action_requires_configured_peer() -> None:
 
 def test_handle_orchestrator_b2b_result_continues_multi_step_calendar_workflow() -> None:
     bot = FakeBot()
-    workflow = {
-        "user_chat_id": 1001,
-        "user_text": "schedule two things",
-        "actions": [
+    workflow = ActionWorkflow.calendar(
+        user_chat_id=1001,
+        user_text="schedule two things",
+        actions=[
             {"action": "add_event", "title": "first"},
             {"action": "add_event", "title": "second"},
         ],
-        "index": 0,
-        "results": [],
-    }
+    )
     context = fake_context({"orchestrator_pending": {"req-1": workflow}}, bot)
 
     handled = asyncio.run(
@@ -204,8 +304,8 @@ def test_handle_orchestrator_b2b_result_continues_multi_step_calendar_workflow()
     )
 
     assert handled is True
-    assert workflow["index"] == 1
-    assert workflow["results"] == [{"kind": "calendar.result", "ok": True}]
+    assert workflow.index == 1
+    assert workflow.results == [{"kind": "calendar.result", "ok": True}]
     envelope = parse_envelope(bot.sent_messages[0]["text"])
     assert envelope is not None
     assert envelope.payload["title"] == "second"
@@ -288,12 +388,13 @@ def test_finish_orchestrator_workflow_sends_calendar_summary_and_stores_context(
     asyncio.run(
         workflows.finish_orchestrator_workflow(
             context,
-            {
-                "user_chat_id": 1001,
-                "user_text": "add event",
-                "actions": [{"action": "add_event"}],
-                "results": [{"kind": "calendar.result", "ok": True}],
-            },
+            ActionWorkflow(
+                service=WorkflowService.CALENDAR,
+                user_chat_id=1001,
+                user_text="add event",
+                actions=[{"action": "add_event"}],
+                results=[{"kind": "calendar.result", "ok": True}],
+            ),
         )
     )
 
