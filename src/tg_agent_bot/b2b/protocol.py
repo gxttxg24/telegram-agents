@@ -23,7 +23,7 @@ class B2BEnvelope:
     message_type: str
     source: str
     target: str
-    payload: dict[str, Any]
+    payload: dict[str, Any]  # REVIEW: 整个项目的 payload 都是 dict[str, Any]，没有任何结构约束。写错 key 不会被发现，只有运行时才会暴露。建议至少给常用 payload 格式定义 TypedDict。
     conversation_id: str
     depth: int = 0
     max_depth: int = 1

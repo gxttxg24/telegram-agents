@@ -208,6 +208,9 @@ def _period_entries(hourly: list[dict[str, Any]], interval_hours: int) -> list[d
 
 
 def weather_code_label(code: int | None) -> str:
+    # REVIEW: 这个 dict 每次函数调用都会重建。应该提到模块级别作为常量。
+    # 虽然 Python 可能会优化掉字面量 dict 的创建，但这是意图不清晰——
+    # 一个不变的映射表应该表达为常量，而不是每次函数调用的局部变量。
     labels = {
         0: "晴",
         1: "基本晴朗",

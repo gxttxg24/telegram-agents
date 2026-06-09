@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-import pickle
+import pickle  # REVIEW: pickle 反序列化是 RCE 漏洞。如果 SQLite 文件被篡改，pickle.loads() 可以执行任意代码。应该用 JSON 序列化 workflow 状态。
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -27,6 +27,10 @@ class PendingRecord:
 
 
 class OrchestratorStateStore:
+    # REVIEW: 这个类同时维护内存缓存 (_pending, _pending_slots, _context_by_chat) 和 SQLite 持久化。
+    # 每次写操作都同时更新两边，每次读操作先 cleanup_expired() 再读内存。
+    # 这种双写模式很脆弱：如果进程崩溃在写完内存、写 SQLite 之前，两边就不一致了。
+    # 对于单进程 bot 勉强能用，但这不是一个可靠的设计。
     def __init__(
         self,
         db_path: Path,
@@ -356,6 +360,10 @@ class OrchestratorStateStore:
 
 
 def state_store_from_context(context: Any) -> Any:
+    # REVIEW: 返回类型是 Any，完全丧失了类型检查的价值。
+    # 所有调用方拿到的都是 Any，mypy/pyright 不会检查任何方法调用。
+    # 应该返回 OrchestratorStateStore 而不是 Any。
+    # context 参数也可以用 ContextTypes.DEFAULT_TYPE 来类型化。
     bot_data = context.application.bot_data
     store = bot_data.get("orchestrator_state")
     if store is None:

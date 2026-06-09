@@ -36,16 +36,21 @@ def build_application(profile: str | None = None) -> Application:
     memory = MemoryStore(settings.memory_db)
     schedule = ScheduleStore(settings.schedule_db)
     orchestrator_state = OrchestratorStateStore(settings.orchestrator_state_db)
-    llm, extract_llm = _build_llm_clients(settings)
+    llm, extract_llm = _build_llm_clients(settings)  # REVIEW: 这个函数只被调一次，没必要抽成独立函数。直接内联更清晰。
 
     application = (
         ApplicationBuilder()
         .token(settings.telegram_token)
         .persistence(persistence)
-        .concurrent_updates(False)
+        .concurrent_updates(False)  # REVIEW: 关掉并发是因为下面的状态管理不是线程安全的。这只能支撑单用户场景，多用户时所有请求会串行排队。
         .build()
     )
 
+    # REVIEW: 把 15 个对象塞进一个 untyped dict 是典型的 service locator 反模式。
+    # 所有 handler 里都要写 context.application.bot_data["memory"] 这种魔法字符串访问，
+    # 没有 IDE 补全，拼错 key 不会报错，mypy 也帮不了你。
+    # 建议: 定义一个 @dataclass BotContext 把这些字段类型化，
+    # 或者至少用一个 TypedDict 约束 bot_data 的 key。
     application.bot_data["memory"] = memory
     application.bot_data["schedule"] = schedule
     application.bot_data["llm"] = llm
@@ -116,6 +121,9 @@ def main(profile: str | None = None) -> None:
 
 
 def _profile_from_argv(argv: list[str]) -> str | None:
+    # REVIEW: 手写 argv 解析是典型的 AI 生成味道——看起来能工作但不完整。
+    # 没有 --help, 不报错未知参数, 静默忽略 "-x" 类 flag。
+    # 3 行 argparse 就能解决，还自带帮助和错误信息。
     if not argv:
         return None
     if argv[0] in {"--profile", "-p"} and len(argv) >= 2:

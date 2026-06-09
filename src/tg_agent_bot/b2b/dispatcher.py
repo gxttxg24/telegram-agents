@@ -165,6 +165,11 @@ async def handle_b2b_message(
     return True
 
 
+# REVIEW: 下面三个函数 (handle_calendar_b2b_request, handle_weather_b2b_request,
+# handle_slot_matcher_b2b_request) 是几乎一模一样的 copy-paste。
+# 唯一的区别是: 1) 调用的 service handler 不同 2) error payload 的 kind 字符串不同。
+# 这 ~100 行可以提取成一个通用的 _dispatch_service_request(context, envelope, handler, kind)。
+# AI 生成代码最常见的坏味道就是这种：它不会主动提取共性，而是为每个 case 生成完整的副本。
 async def handle_calendar_b2b_request(
     context: ContextTypes.DEFAULT_TYPE,
     envelope,

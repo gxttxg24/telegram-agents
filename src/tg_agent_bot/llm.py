@@ -90,6 +90,9 @@ class CodexAPIClient:
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
+        # REVIEW: 每次请求都新建一个 httpx.AsyncClient 然后销毁。
+        # AsyncClient 的设计意图是复用连接池，创建/销毁开销不小 (TCP 握手, TLS 协商等)。
+        # 应该在 CodexAPIClient 初始化时创建一个持久的 client，或者用全局 client。
         async with httpx.AsyncClient(timeout=timeout_seconds) as client:
             response = await client.post(
                 _responses_url(self.base_url),
