@@ -79,6 +79,9 @@ class WeatherScheduleState:
         self.index = 0
 
 
+# REVIEW: 这个函数只是调了一下 WeatherScheduleState.from_plan()，没有任何额外逻辑。
+# 函数 -> classmethod -> __init__，三层间接才构造一个对象，AI 生成的"整洁代码"典型。
+# 直接在调用方写 WeatherScheduleState.from_plan(...) 就行，删掉这个 wrapper。
 def build_weather_schedule_workflow(
     *,
     user_chat_id: int,
@@ -120,6 +123,7 @@ def advance_weather_schedule(
     )
 
 
+# REVIEW: 公开函数只是调了同名的私有函数，零附加价值。直接把 _build_slot_matcher_payload 改成公开的。
 def build_slot_matcher_payload(state: WeatherScheduleState) -> dict[str, Any] | None:
     return _build_slot_matcher_payload(state)
 

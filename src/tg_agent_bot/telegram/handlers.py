@@ -8,7 +8,7 @@ from telegram.constants import ChatAction
 from telegram.ext import ContextTypes
 
 from ..b2b.dispatcher import handle_b2b_message
-from ..b2b.protocol import B2BProtocolError, parse_envelope
+from ..b2b.protocol import B2BProtocolError, parse_envelope  # REVIEW: B2BProtocolError 和 parse_envelope 在这个文件里没有被使用，是死导入。
 from ..llm import LLMClient
 from ..memory import MemoryStore
 from ..orchestrator.workflows import handle_orchestrator_text, is_orchestrator_bot

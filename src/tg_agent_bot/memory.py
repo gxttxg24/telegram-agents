@@ -20,6 +20,9 @@ class MemoryStore:
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
+        # REVIEW: 每次操作都新建一个 SQLite 连接，add() 调两次就是两次 connect/close。
+        # 对于低流量 bot 勉强能用，但这不是一个好习惯。
+        # 建议用一个 self._conn 长连接，或者在 __init__ 里建好连接复用。
         return sqlite3.connect(self.db_path)
 
     def _init_db(self) -> None:

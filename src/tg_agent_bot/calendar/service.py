@@ -247,6 +247,9 @@ def _replace_single_event(
     )
 
 
+# REVIEW: _required_text, _parse_date, _parse_datetime 在 weather/service.py 和
+# slot_matcher/service.py 里也有几乎一样的实现。AI 喜欢给每个模块生成"自包含"的代码，
+# 导致同一个 helper 复制 3 份。应该提到一个公共 utils 模块里。
 def _required_text(payload: dict[str, Any], key: str) -> str:
     value = str(payload.get(key, "")).strip()
     if not value:

@@ -105,6 +105,9 @@ def _parse_datetime(value: Any) -> datetime:
     if not raw:
         raise SlotMatcherServiceError("datetime value is required.")
     if raw.endswith(":59") and len(raw) == 16:
+        # REVIEW: 这个 magic patch 是什么意思？"2026-06-10T23:59" 变成 "2026-06-10T23:59:59"？
+        # 没有任何注释解释为什么需要这个特殊处理。这是 AI 生成代码的另一个味道：
+        # 加入 edge case 处理但不解释动机，让后来的维护者不敢删。
         raw = raw + ":59"
     parsed = datetime.fromisoformat(raw)
     if parsed.tzinfo is None:

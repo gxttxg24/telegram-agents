@@ -8,7 +8,7 @@ from dataclasses import replace
 TELEGRAM_TEXT_LIMIT = 4096
 
 
-def telegram_safe_envelope_text(envelope) -> str:
+def telegram_safe_envelope_text(envelope) -> str:  # REVIEW: 参数 envelope 没有类型标注，应该是 B2BEnvelope。
     text = envelope.to_text()
     if len(text) <= TELEGRAM_TEXT_LIMIT:
         return text

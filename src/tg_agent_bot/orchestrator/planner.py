@@ -8,6 +8,10 @@ from ..llm import LLMClient
 from ..calendar.store import LOCAL_TZ
 
 
+# REVIEW: 两个 system prompt 合计 ~90 行，内嵌在 Python 源码里。
+# 这些 prompt 会频繁迭代调整，和 Python 逻辑耦合在一起不利于管理。
+# 建议: 1) 抽到独立的 .txt 或 .yaml 文件里 2) 或者用 Jinja/f-string 模板分离结构和内容。
+# 目前这种写法改一个措辞就要改 Python 文件、跑测试、做 code review，成本太高。
 ORCHESTRATOR_SYSTEM_PROMPT = """
 你是 Telegram 多 Agent 工作流的总控 JSON 规划器，只返回一个 JSON 对象，不要解释。
 当前只处理日程/日历类请求。你不直接操作数据库，而是把用户自然语言转换为 CalendarBot 结构化 actions。
@@ -343,6 +347,9 @@ def _validate_weather_plan(data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# REVIEW: 这个函数每次调用都创建一个新 set。应该是模块级常量:
+#   _ALLOWED_ACTIONS = {"list_events", "events_on_day", ...}
+# 虽然性能影响微乎其微，但这是个代码质量问题——AI 不区分"值"和"函数"。
 def _allowed_actions() -> set[str]:
     return {
         "list_events",

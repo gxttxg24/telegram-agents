@@ -179,6 +179,11 @@ async def start_orchestrator_weather_workflow(
     await update.effective_message.reply_text(str(plan.get("summary") or "我先查询天气。"))
 
 
+# REVIEW: 下面三个 send_orchestrator_*_action 函数是 copy-paste。
+# 模式完全相同: 取 payload -> 设 service 字段 -> 解析 target -> 构造请求 -> 发送 -> 存 pending -> 记日志。
+# 只有 service 名、profile key、日志文本不同。应该提取成一个通用函数:
+#   async def _send_b2b_action(context, workflow, service: str, profile_key: str)
+# 75 行代码可以缩到 25 行。
 async def send_orchestrator_calendar_action(
     context: ContextTypes.DEFAULT_TYPE,
     workflow: ActionWorkflow | WeatherScheduleState,
@@ -407,4 +412,7 @@ def is_orchestrator_bot(context: ContextTypes.DEFAULT_TYPE) -> bool:
 
 
 def looks_like_weather_request(user_text: str) -> bool:
+    # REVIEW: 这个 regex 太粗糙。"雨" 一个字就能匹配，但 "雨伞"、"雨果"、"风雨无阻" 都不是天气查询。
+    # "晴" 也会误匹配 "晴天霹雳" 这种成语。
+    # 更好的做法: 用 LLM 做 intent classification，或者至少用更精确的 pattern。
     return bool(re.search(r"(天气|下雨|降水|雨|不下雨|晴|阴天|多云)", user_text))

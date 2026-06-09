@@ -8,6 +8,8 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 
+# REVIEW: 时区硬编码。如果有非中国用户就完全不工作了。
+# 应该从 config/Settings 传入，或者至少作为环境变量。
 try:
     LOCAL_TZ = ZoneInfo("Asia/Shanghai")
 except Exception:
@@ -49,6 +51,9 @@ class ScheduleStore:
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
+        # REVIEW: 同 memory.py，每次操作都新建连接。ScheduleStore 的情况更严重，
+        # 因为 conflicting_events + add_event 经常连续调用，每次都是独立连接+事务。
+        # replace_events() 里的 DELETE+INSERT 倒是在同一个 with 块里，算是正确的。
         return sqlite3.connect(self.db_path)
 
     def _init_db(self) -> None:
@@ -310,6 +315,10 @@ def _event_from_row(row: tuple[int, int, str, str, str]) -> CalendarEvent:
     )
 
 
+# REVIEW: AI \u5178\u578b\u5473\u9053\u2014\u2014\u628a\u4e2d\u6587\u5199\u6210 unicode escape \u8ba9 regex \u5b8c\u5168\u4e0d\u53ef\u8bfb\u3002
+# \u4e0d\u60f3 \u5c31\u662f "\u4e0d\u60f3"\uff0c\u4e0a\u5348 \u5c31\u662f "\u4e0a\u5348"\u3002
+# \u76f4\u63a5\u5199\u4e2d\u6587: re.search(r"(\u4e0d\u60f3|\u4e0d\u559c\u6b22|\u907f\u514d|\u5c3d\u91cf\u4e0d).{0,6}(\u4e0a\u5348|\u65e9\u4e0a|\u65e9\u6668)", preference)
+# Python 3 \u6e90\u6587\u4ef6\u9ed8\u8ba4 UTF-8\uff0c\u6ca1\u6709\u4efb\u4f55\u7406\u7531\u7528 escape\u3002
 def _dislikes_morning(preference: str) -> bool:
     return bool(re.search(r"(\u4e0d\u60f3|\u4e0d\u559c\u6b22|\u907f\u514d|\u5c3d\u91cf\u4e0d).{0,6}(\u4e0a\u5348|\u65e9\u4e0a|\u65e9\u6668)", preference))
 

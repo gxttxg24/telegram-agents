@@ -11,6 +11,13 @@ class WorkflowService(StrEnum):
     WEATHER = "weather"
 
 
+# REVIEW: ActionWorkflow 和 weather_schedule.py 里的 WeatherScheduleState 有相同的接口
+# (current_action, has_next_action, user_chat_id, actions, index, results)
+# 但没有共享基类或 Protocol。workflows.py 到处用 isinstance() 分支:
+#   if isinstance(workflow, WeatherScheduleState): ...
+#   if isinstance(workflow, ActionWorkflow): ...
+# AI 生成代码倾向于"每个场景一个类"而不是抽象共性。
+# 应该定义一个 Protocol 或 ABC 让两者共享接口，消除 isinstance 检查。
 @dataclass
 class ActionWorkflow:
     service: WorkflowService

@@ -1,3 +1,10 @@
+<!-- REVIEW: 这个 README 有 530 行，但实际源码只有 ~2500 行。
+     典型的 AI 生成文档：对每个文件、每个测试文件都做了同等详细度的说明，
+     没有区分"读者需要知道什么"和"可以从代码里看到什么"。
+     人写的 README 应该 50-80 行，只覆盖: 是什么、怎么装、怎么跑、怎么测。
+     文件级描述属于代码内 docstring 的职责，不应该在 README 里逐个罗列。
+     另外第 22 行有硬编码的 Windows 路径 d:\R\summer\intern\orion\agent_test，
+     暴露了开发者的本地环境，不应该出现在 README 里。 -->
 # Telegram Multi-Agent Bot
 
 这是一个基于 Telegram Bot API 的多 bot 协作项目。系统用 4 个 Telegram bot 分工处理自然语言日程管理、天气查询、空闲时间匹配和日程落库。
