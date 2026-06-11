@@ -12,6 +12,7 @@ class Settings:
     bot_profile: str
     telegram_token: str
     telegram_username: str
+    bot_tokens: dict[str, str]
     bot_peers: dict[str, str]
     telegram_persistence_file: Path
     codex_base_url: str
@@ -20,12 +21,7 @@ class Settings:
     codex_extract_model: str
     history_turns: int
     memory_db: Path
-    schedule_db: Path
-    orchestrator_state_db: Path
-    orchestrator_profile: str
-    calendar_bot_profile: str
-    weather_bot_profile: str
-    slot_matcher_bot_profile: str
+    expedition_role_profiles: dict[str, str]
 
 
 def load_settings(profile: str | None = None) -> Settings:
@@ -56,17 +52,6 @@ def load_settings(profile: str | None = None) -> Settings:
         _profile_env(bot_profile, "MEMORY_DB")
         or os.getenv("BOT_MEMORY_DB", f"data/bot_memory{profile_suffix}.sqlite3")
     )
-    schedule_db = Path(
-        _profile_env(bot_profile, "SCHEDULE_DB")
-        or os.getenv("BOT_SCHEDULE_DB", f"data/bot_schedule{profile_suffix}.sqlite3")
-    )
-    orchestrator_state_db = Path(
-        _profile_env(bot_profile, "ORCHESTRATOR_STATE_DB")
-        or os.getenv(
-            "BOT_ORCHESTRATOR_STATE_DB",
-            f"data/orchestrator_state{profile_suffix}.sqlite3",
-        )
-    )
     codex_model = (
         os.getenv("CODEX_MODEL", "").strip()
         or "gpt-5.2"
@@ -76,6 +61,7 @@ def load_settings(profile: str | None = None) -> Settings:
         bot_profile=bot_profile,
         telegram_token=token,
         telegram_username=_profile_env(bot_profile, "USERNAME"),
+        bot_tokens=_discover_bot_tokens(),
         bot_peers=_discover_bot_usernames(),
         telegram_persistence_file=telegram_persistence_file,
         codex_base_url=os.getenv("CODEX_BASE_URL", "").strip().rstrip("/"),
@@ -87,12 +73,7 @@ def load_settings(profile: str | None = None) -> Settings:
         ),
         history_turns=max(1, history_turns),
         memory_db=memory_db,
-        schedule_db=schedule_db,
-        orchestrator_state_db=orchestrator_state_db,
-        orchestrator_profile=_normalize_profile(os.getenv("ORCHESTRATOR_PROFILE", "C")),
-        calendar_bot_profile=_normalize_profile(os.getenv("CALENDAR_BOT_PROFILE", "A")),
-        weather_bot_profile=_normalize_profile(os.getenv("WEATHER_BOT_PROFILE", "B")),
-        slot_matcher_bot_profile=_normalize_profile(os.getenv("SLOT_MATCHER_BOT_PROFILE", "D")),
+        expedition_role_profiles=_expedition_role_profiles(bot_profile),
     )
 
 
@@ -124,3 +105,33 @@ def _discover_bot_usernames() -> dict[str, str]:
         if normalized_profile and username:
             peers[normalized_profile] = username
     return dict(sorted(peers.items()))
+
+
+def _discover_bot_tokens() -> dict[str, str]:
+    tokens: dict[str, str] = {}
+    for key, value in os.environ.items():
+        if not key.startswith("BOT_") or not key.endswith("_TOKEN"):
+            continue
+        profile = key.removeprefix("BOT_").removesuffix("_TOKEN")
+        normalized_profile = _normalize_profile(profile)
+        token = value.strip()
+        if normalized_profile and token:
+            tokens[normalized_profile] = token
+    return dict(sorted(tokens.items()))
+
+
+def _expedition_role_profiles(bot_profile: str) -> dict[str, str]:
+    defaults = {
+        "controller": bot_profile or "C",
+        "mentor": "A",
+        "scholar": "B",
+        "scout": "D",
+        "log": "E",
+        "guide": "F",
+    }
+    return {
+        role: _normalize_profile(
+            os.getenv(f"EXPEDITION_{role.upper()}_PROFILE", default_profile)
+        )
+        for role, default_profile in defaults.items()
+    }

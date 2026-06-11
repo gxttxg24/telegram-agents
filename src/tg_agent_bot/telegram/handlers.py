@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import logging
@@ -7,21 +6,20 @@ from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import ContextTypes
 
-from ..b2b.dispatcher import handle_b2b_message
-from ..b2b.protocol import B2BProtocolError, parse_envelope
 from ..llm import LLMClient
 from ..memory import MemoryStore
-from ..orchestrator.workflows import handle_orchestrator_text, is_orchestrator_bot
 
 
 logger = logging.getLogger(__name__)
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_message is None:
         return
 
     await update.effective_message.reply_text(
-        "你好，我已经在线。私聊 OrchestratorBot 可以发起日程、天气和空闲时间匹配协作。"
+        "ExpeditionForge controller is online. Add me to a Telegram group with "
+        "the actor bots, then start with /expedition_start magic_academy."
     )
 
 
@@ -31,7 +29,7 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     memory: MemoryStore = context.application.bot_data["memory"]
     memory.clear(update.effective_chat.id)
-    await update.effective_message.reply_text("已清空这段私聊的上下文记忆。")
+    await update.effective_message.reply_text("This private chat memory has been cleared.")
 
 
 async def handle_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -42,17 +40,17 @@ async def handle_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not user_text.strip():
         return
 
-    if await handle_b2b_message(update, context, user_text):
-        return
-
-    if is_orchestrator_bot(context):
-        if await handle_orchestrator_text(update, context, user_text):
-            return
-
     memory: MemoryStore = context.application.bot_data["memory"]
-    llm: LLMClient = context.application.bot_data["llm"]
+    llm: LLMClient | None = context.application.bot_data["llm"]
     history_turns: int = context.application.bot_data["history_turns"]
     chat_id = update.effective_chat.id
+
+    if llm is None:
+        await update.effective_message.reply_text(
+            "I received your message, but no Codex API client is configured. "
+            "Set CODEX_API_KEY and CODEX_BASE_URL to enable private chat replies."
+        )
+        return
 
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
     history = memory.recent(chat_id, limit=history_turns * 2)
@@ -62,8 +60,8 @@ async def handle_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     except Exception:
         logger.exception("LLM request failed")
         reply = (
-            "我收到了你的消息，但 Codex API 暂时不可用。"
-            "请确认 CODEX_API_KEY、CODEX_BASE_URL 和模型配置可用。"
+            "I received your message, but the Codex API request failed. "
+            "Check CODEX_API_KEY, CODEX_BASE_URL, and model settings."
         )
 
     memory.add(chat_id, "user", user_text)

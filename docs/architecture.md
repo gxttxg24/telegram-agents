@@ -1,10 +1,15 @@
-
 # Architecture
 
-This refactor keeps the bot small while separating the main responsibilities:
+ExpeditionForge is now centered on a Telegram group stage:
 
-- `app.py` wires settings, persistence, stores, LLM clients, and Telegram handlers.
-- `telegram/` contains Telegram commands and message handlers.
-- `b2b/` contains the bot-to-bot envelope protocol and dispatcher.
-- `orchestrator/` contains planning, summaries, and multi-step workflows.
-- `calendar/`, `weather/`, and `slot_matcher/` contain domain services.
+- `app.py` wires settings, persistence, memory, LLM clients, and Telegram handlers.
+- `config.py` discovers the Telegram bot pool and expedition role mapping.
+- `telegram/` contains the small private-chat handlers and shared Telegram helpers.
+- `expedition/` contains world models, templates, the action compiler, Director planning,
+  Telegram commands, callback handling, actor dispatch, and bot-pool assignment.
+- `memory.py` stores ordinary private-chat context.
+- `llm.py` provides the Codex API client used by private chat, world generation, and
+  Director planning.
+
+Retired fixed-service modules such as calendar, weather, slot matching, bot-to-bot RPC,
+and the old orchestrator workflow are intentionally not part of the active runtime.

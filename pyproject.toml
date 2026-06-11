@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "tg-agent-bot"
 version = "0.1.0"
-description = "Telegram multi-agent scheduling bot"
+description = "Telegram multi-bot expedition stage runtime"
 requires-python = ">=3.11"
 dependencies = [
   "python-dotenv==1.1.0",

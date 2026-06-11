@@ -58,24 +58,43 @@ class CodexAPIClient:
         *,
         timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
-        data = await self._responses_request(
-            {
-                "model": self.model,
-                "instructions": system_prompt,
-                "input": [
-                    {
-                        "role": "user",
-                        "content": "Return JSON only. User request:\n" + user_prompt,
-                    }
-                ],
-                "text": {"format": {"type": "json_object"}},
-            },
-            timeout_seconds=timeout_seconds or self.timeout_seconds,
-        )
+        payload = {
+            "model": self.model,
+            "instructions": system_prompt,
+            "input": [
+                {
+                    "role": "user",
+                    "content": "Return JSON only. User request:\n" + user_prompt,
+                }
+            ],
+            "text": {"format": {"type": "json_object"}},
+        }
+        try:
+            data = await self._responses_request(
+                payload,
+                timeout_seconds=timeout_seconds or self.timeout_seconds,
+            )
+        except RuntimeError:
+            fallback_payload = dict(payload)
+            fallback_payload.pop("text", None)
+            fallback_payload["input"] = [
+                {
+                    "role": "user",
+                    "content": (
+                        "Return a single JSON object only. Do not include markdown.\n"
+                        "User request:\n"
+                        + user_prompt
+                    ),
+                }
+            ]
+            data = await self._responses_request(
+                fallback_payload,
+                timeout_seconds=timeout_seconds or self.timeout_seconds,
+            )
         content = _extract_response_text(data).strip()
         if not content:
             raise RuntimeError("Codex API returned an empty JSON response.")
-        parsed = json.loads(content)
+        parsed = _parse_json_object_text(content)
         if not isinstance(parsed, dict):
             raise RuntimeError("Codex API JSON response must be an object.")
         return parsed
@@ -165,6 +184,29 @@ def _parse_response_payload(response: httpx.Response) -> dict[str, Any]:
     if deltas:
         return {"output_text": "".join(deltas)}
     raise RuntimeError("Codex API streaming response did not include output text.")
+
+
+def _parse_json_object_text(content: str) -> dict[str, Any]:
+    cleaned = content.strip()
+    if cleaned.startswith("```"):
+        lines = cleaned.splitlines()
+        if lines and lines[0].strip().startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        cleaned = "\n".join(lines).strip()
+
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError:
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            raise
+        parsed = json.loads(cleaned[start : end + 1])
+    if not isinstance(parsed, dict):
+        raise RuntimeError("Codex API JSON response must be an object.")
+    return parsed
 
 
 def _chat_messages(history: list[ChatMessage], user_text: str) -> list[dict[str, str]]:

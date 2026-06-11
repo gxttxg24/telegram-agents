@@ -8,6 +8,7 @@ from telegram import Update
 from telegram.ext import (
     Application,
     ApplicationBuilder,
+    CallbackQueryHandler,
     CommandHandler,
     MessageHandler,
     PicklePersistence,
@@ -15,14 +16,20 @@ from telegram.ext import (
     filters,
 )
 
-from .b2b.protocol import normalize_username
-from .calendar.store import ScheduleStore
 from .config import load_settings
+from .expedition.commands import (
+    expedition_debug,
+    expedition_free_action_command,
+    expedition_group_text,
+    expedition_knowledge,
+    expedition_role_command,
+    expedition_start,
+)
+from .expedition.commands import expedition_action_callback
 from .llm import CodexAPIClient, LLMClient
 from .memory import MemoryStore
-from .orchestrator.runtime_state import OrchestratorStateStore
-from .telegram.commands import b2b_calendar, b2b_debug, b2b_ping, b2b_status, b2b_weather
 from .telegram.handlers import error_handler, handle_private_text, reset, start
+from .telegram.utils import normalize_username
 
 
 logger = logging.getLogger(__name__)
@@ -34,8 +41,6 @@ def build_application(profile: str | None = None) -> Application:
         store_data=PersistenceInput(bot_data=False),
     )
     memory = MemoryStore(settings.memory_db)
-    schedule = ScheduleStore(settings.schedule_db)
-    orchestrator_state = OrchestratorStateStore(settings.orchestrator_state_db)
     llm, extract_llm = _build_llm_clients(settings)
 
     application = (
@@ -47,37 +52,50 @@ def build_application(profile: str | None = None) -> Application:
     )
 
     application.bot_data["memory"] = memory
-    application.bot_data["schedule"] = schedule
     application.bot_data["llm"] = llm
     application.bot_data["extract_llm"] = extract_llm
     application.bot_data["history_turns"] = settings.history_turns
-    application.bot_data["b2b_events"] = []
     application.bot_data["bot_profile"] = settings.bot_profile
-    application.bot_data["orchestrator_profile"] = settings.orchestrator_profile
-    application.bot_data["calendar_bot_profile"] = settings.calendar_bot_profile
-    application.bot_data["weather_bot_profile"] = settings.weather_bot_profile
-    application.bot_data["slot_matcher_bot_profile"] = settings.slot_matcher_bot_profile
-    application.bot_data["orchestrator_state"] = orchestrator_state
+    application.bot_data["bot_tokens"] = dict(settings.bot_tokens)
     application.bot_data["configured_bot_username"] = normalize_username(settings.telegram_username)
     application.bot_data["bot_peers"] = {
         profile: normalize_username(username)
         for profile, username in settings.bot_peers.items()
     }
+    application.bot_data["expedition_role_profiles"] = dict(settings.expedition_role_profiles)
     application.bot_data["settings_summary"] = {
         "persistence": str(settings.telegram_persistence_file),
         "memory_db": str(settings.memory_db),
-        "schedule_db": str(settings.schedule_db),
-        "orchestrator_state_db": str(settings.orchestrator_state_db),
     }
 
     private_chat = filters.ChatType.PRIVATE
+    group_chat = filters.ChatType.GROUPS
     application.add_handler(CommandHandler("start", start, filters=private_chat))
     application.add_handler(CommandHandler("reset", reset, filters=private_chat))
-    application.add_handler(CommandHandler("b2b_ping", b2b_ping))
-    application.add_handler(CommandHandler("b2b_status", b2b_status))
-    application.add_handler(CommandHandler("b2b_calendar", b2b_calendar))
-    application.add_handler(CommandHandler("b2b_weather", b2b_weather))
-    application.add_handler(CommandHandler("b2b_debug", b2b_debug))
+    application.add_handler(CommandHandler("expedition_start", expedition_start))
+    application.add_handler(CommandHandler("expedition_debug", expedition_debug))
+    application.add_handler(CommandHandler("expedition_knowledge", expedition_knowledge))
+    application.add_handler(
+        CommandHandler(
+            ["do", "act", "expedition_do"],
+            expedition_free_action_command,
+            filters=group_chat,
+        )
+    )
+    application.add_handler(
+        CommandHandler(
+            ["mori", "scholar", "serena", "mentor", "raven", "scout", "pip", "log", "ailo", "guide"],
+            expedition_role_command,
+            filters=group_chat,
+        )
+    )
+    application.add_handler(CallbackQueryHandler(expedition_action_callback, pattern=r"^expedition:action:"))
+    application.add_handler(
+        MessageHandler(
+            group_chat & filters.TEXT & ~filters.COMMAND,
+            expedition_group_text,
+        )
+    )
     application.add_handler(
         MessageHandler(
             private_chat & filters.TEXT & ~filters.COMMAND,
@@ -101,16 +119,17 @@ def main(profile: str | None = None) -> None:
         f" profile {profile_name}" if profile_name else "",
     )
     logger.info(
-        "Bot storage: persistence=%s memory=%s schedule=%s",
+        "Bot storage: persistence=%s memory=%s",
         settings_summary.get("persistence", ""),
         settings_summary.get("memory_db", ""),
-        settings_summary.get("schedule_db", ""),
     )
     logger.info(
-        "Orchestrator state: db=%s pending=%s seen=%s",
-        settings_summary.get("orchestrator_state_db", ""),
-        application.bot_data["orchestrator_state"].pending_count(),
-        application.bot_data["orchestrator_state"].seen_count(),
+        "Expedition roles: %s",
+        application.bot_data.get("expedition_role_profiles", {}),
+    )
+    logger.info(
+        "Configured bot profiles with tokens: %s",
+        sorted(application.bot_data.get("bot_tokens", {})),
     )
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
@@ -125,11 +144,12 @@ def _profile_from_argv(argv: list[str]) -> str | None:
     return argv[0]
 
 
-def _build_llm_clients(settings) -> tuple[LLMClient, LLMClient]:
-    if not settings.codex_api_key:
-        raise RuntimeError("CODEX_API_KEY is required in .env.")
-    if not settings.codex_base_url:
-        raise RuntimeError("CODEX_BASE_URL is required in .env.")
+def _build_llm_clients(settings) -> tuple[LLMClient | None, LLMClient | None]:
+    if not settings.codex_api_key or not settings.codex_base_url:
+        logger.warning(
+            "Codex API is not configured; LLM features will use deterministic fallbacks."
+        )
+        return None, None
     return (
         CodexAPIClient(
             settings.codex_base_url,
